@@ -1,0 +1,45 @@
+{
+  "name": "faultyai",
+  "displayName": "FaultyAI",
+  "description": "Produces code with errors",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+  "onLanguage:java",  
+  "onStartupFinished"     
+  ],
+  "main": "./extension.js",
+"contributes": {
+  "commands": [
+    {
+      "command": "faultyai.acceptSuggestion",
+      "title": "FaultyAI: Accept Suggestion"
+    }
+  ],
+  "keybindings": [
+    {
+      "command": "faultyai.acceptSuggestion",
+      "key": "tab",
+      "when": "editorTextFocus"
+    }
+  ]
+},
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.100.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "eslint": "^9.25.1",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
