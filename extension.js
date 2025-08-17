@@ -352,7 +352,7 @@ class SuggestionController {
             regex
           );
           vscode.window.showInformationMessage(
-            `FaultyAI suggestion for "${key}"`
+            `AntiCopilot suggestion for "${key}"`
           );
           break;
         }
@@ -373,7 +373,7 @@ class SuggestionController {
           });
           this.showSuggestion(editor, line.lineNumber, suggestion, regex);
           vscode.window.showInformationMessage(
-            `FaultyAI: Variable pattern matched for "${key}" with variable "${variableName}"`
+            `AntiCopilot: Variable pattern matched for "${key}" with variable "${variableName}"`
           );
           break; // Stop checking other variable-dependent patterns
         }
@@ -389,7 +389,7 @@ class SuggestionController {
 let controller;
 
 function activate(context) {
-  console.log("FaultyAI extension activated!");
+  console.log("AntiCopilot extension activated!");
 
   controller = new SuggestionController();
 
