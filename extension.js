@@ -1,3 +1,7 @@
+/*
+// keep track and modofiy the replacemnt code , so for loops cuz it does not have much variation ; 
+// nail down for loops so that users can contiue to write code and the suggested code should be altered to match the user code
+*/
 const vscode = require("vscode");
 
 class SuggestionController {
@@ -6,442 +10,473 @@ class SuggestionController {
       after: {
         color: "#888888",
         fontStyle: "italic",
-        margin: "0 0 0 10px",
       },
     });
 
     this.patterns = {
-      variableDependent: {
-        Scanner: () => ` = new Scanner(System);`,
-        BufferedReader: () =>
-          ` = new BufferedReader(new FileReader("input.txt"));`,
-        // run time NullPointerException (NPE)
-        //String[]: () => `= new String[3] \n greetings[0].toLowerCase();`, // creates an array of 3 null elements
-      },
-      generic: {
-        for: [" (int i = 0; i < 10; i++) {", "System.println(i);", "}"],
-        while: [" (x < 10) {", "System.out.println(x);", "  x++;", "  }"],
-        //run time ArrayIndexOutOfBoundsException
-        "int[]": [
-          "numbers = {1, 2, 3, 4, 5};",
-          "for (int i = 0; i <= numbers.length; i++) {", // BUG: <= instead of <
-          "    System.out.println(numbers[i]);", // BUG: Will crash at i=5
-          "}",
-        ],
-      },
+      // Regex-driven so users can match richer shapes than simple keywords.
+      variableDependent: [
+        {
+          trigger: /\bScanner\s+(\w+)\b/,
+          builder: ({}) => [` = new Scanner(System.in);`],
+        },
+        { trigger: /\bint\s+(\w+)\b/, builder: ({}) => [`= sc.next();`] },
+      ],
+      generic: [
+        {
+          trigger: /\bwhile\b/,
+          suggestion: [
+            " (x < 10) {",
+            "    System.out.println(x);",
+            "    x++;",
+            "}",
+          ],
+        },
+        {
+          trigger: /\bint\[\]\s+[a-zA-Z_][a-zA-Z0-9_]*/,
+          suggestion: [
+            " = {1, 2, 3, 4, 5};",
+            "for (int i = 0; i <= numbers.length; i++) {",
+            "    System.out.println(numbers[i]);",
+            "}",
+          ],
+        },
+        {
+          trigger: /if\s*\(\s*guess\s*>\s*secret\s*\)/,
+          suggestion: [
+            "{",
+            "minV = Math.max(minV, guess + 1);",
+            "} else if (guess < secret) {",
+            "maxV = Math.min(maxV, guess - 1);",
+            "}",
+          ],
+        },
+        {
+          trigger: /if\s*\(\s*maxV\s*>\s*minV\s*\)/,
+          suggestion: [" {", "  minV = maxV;", "}"],
+        },
+        {
+          trigger: /return\s\/new\s+int\[\]\s*;/,
+          suggestion: ["int[] { minV, maxV };"],
+        },
+        {
+          trigger: /return\s+sum\s+\/\s+guesses\.length\s*;/,
+          suggestion: ["(int) sum / guesses.length;"],
+        },
+        {
+          trigger: /\bint\s+secret\s*=\s*rng\b/,
+          suggestion: [".nextInt(minV - maxV + 2) + minV;"],
+        },
+        {
+          trigger: /\bfor\s*\(\s*int\s+attempt\s*=/,
+          suggestion: ["1; attempt < 8; attempt++) {"],
+        },
+        {
+          trigger: /\bminV\s*=\s*range\b/,
+          suggestion: ["[0]"],
+        },
+        {
+          trigger: /\bmaxV\s*=\s*range\b/,
+          suggestion: ["[2]"],
+        },
+        {
+          trigger: /\bif\s*\(\s*guesses\[/,
+          suggestion: ["guesses.length - 1] != secret){"],
+        },
+        {
+          trigger: /\bint\s+avg/,
+          suggestion: ["(int) averageGuess(guesses);"],
+        },
+      ],
     };
 
-    this.activePattern = new Map();
-
-    this.pendingSuggestion = {
-      line: null,
-      text: "",
-    };
+    this.pendingSuggestion = null;
     this.acceptedLines = new Set();
-  }
-  async formatInsertedCode(editor, startLine, endLine) {
-    try {
-      // Select the range of inserted code
-      const startPos = new vscode.Position(startLine, 0);
-      const endPos = new vscode.Position(
-        endLine,
-        editor.document.lineAt(endLine).text.length
-      );
-
-      // Set selection
-      editor.selection = new vscode.Selection(startPos, endPos);
-
-      // Format the selection (includes indentation)
-      await vscode.commands.executeCommand("editor.action.formatSelection");
-
-      return true;
-    } catch (error) {
-      console.error("Error formatting code:", error);
-      return false;
-    }
+    this.isAccepting = false;
+    this.superpressedPatterns = new Map(); // Map: lineNumber -> Set of pattern keys
   }
 
-  findTriggerWord(lineText) {
-    for (const key in this.patterns.generic) {
-      const regex = new RegExp(`\\b${key}\\b`);
-      if (regex.test(lineText)) {
-        return key; // Return the first matching trigger word
-      }
-    }
-    for (const key in this.patterns.variableDependent) {
-      const regex = new RegExp(`\\b${key}\\s+(\\w+)\\b`);
-      if (regex.test(lineText)) {
-        return key; // Return the first matching trigger word
-      }
-    }
-    return ""; // No trigger word found
-  }
+  findTriggerMatch(lineText, lineNumber) {
+    // Check generic patterns first (regex-driven)
+    for (const entry of this.patterns.generic) {
+      const match = entry.trigger.exec(lineText);
+      if (match) {
+        const patternKey = entry.trigger.toString();
 
-  async showSuggestion(editor, lineNumber, suggestionText, regex) {
-    if (!Array.isArray(suggestionText)) {
-      //normal way
-      let line = editor.document.lineAt(lineNumber);
-      let range = new vscode.Range(line.range.start, line.range.end);
-      let decoration = [];
-      decoration.push({
-        range,
-        renderOptions: {
-          // This approach is limited to decorating a single line because
-          //  the after property only appends text to the end of the current line.
-          after: {
-            contentText: suggestionText,
-          },
-        },
-      });
-      editor.setDecorations(this.greyDecoration, decoration);
-      this.pendingSuggestion = { line: lineNumber, text: suggestionText };
-      this.activePattern.set(lineNumber, regex);
-      return;
-    }
-
-    // for multi line suggestions
-    const doc = editor.document;
-    const decoration = [];
-
-    // Determine if we should use single line or multi-line suggestion
-    let singleLine = false;
-
-    /*
-     // if there is content in a line, and the number of 
-     // lines the suggested text is taking up is less than the number 
-     // of lines it takes to get to the line with content in it, then do 
-     // proceed to do multiline suggestion, however, if suggested text is 
-     // taking up more lines than it takes to get to the next line with content, 
-     // then peroceed to do single line suggestion. so if i do a while loop on line 17 and
-     //  then go one line above to line 16 and do another while loop which takes up 4 lines of code,
-     //  I will do the onw line suggestion because the number of lines the while loop takes up is more
-     //  than the distance between line 16 and 17 (how far the next line of content aka the next while loop) 
-    */
-
-    //if the distance to next content is less than 2 lines, do single line
-    // else if content is found, and the suggestText lengrth is more, then inswrt the nymber of suggestioTextLength+1 number of lines to the code so that multiline suggestion can be activated
-
-    //find the next line with content
-    let nextContentLineDistance = null;
-    for (let i = 1; i <= doc.lineCount - lineNumber; i++) {
-      const checkLineNum = lineNumber + i;
-      if (checkLineNum < doc.lineCount) {
-        const lineExists = doc.lineAt(checkLineNum);
-        console.log("Line exsit: " + lineExists);
-        if (!lineExists.isEmptyOrWhitespace) {
-          nextContentLineDistance = i;
-          console.log("distance " + nextContentLineDistance);
-          break;
+        // Check if this pattern is suppressed for this specific line
+        if (lineNumber !== undefined) {
+          const suppressedForLine = this.superpressedPatterns.get(lineNumber);
+          if (suppressedForLine && suppressedForLine.has(patternKey)) {
+            return null; // Skip suppressed patterns
+          }
         }
+
+        const suggestion =
+          typeof entry.suggestion === "function"
+            ? entry.suggestion({ match })
+            : entry.suggestion;
+        return {
+          type: "generic",
+          key: patternKey,
+          regex: entry.trigger,
+          suggestion,
+        };
       }
     }
-    //suggestion mode based on distance to next content line
-    if (nextContentLineDistance !== null) {
-      if (nextContentLineDistance <= 1) {
-        // If the next content line is within 1 lines, we will use single line suggestion
-        singleLine = true;
-        console.log("Single line used");
+
+    // Check variable-dependent patterns
+    for (const entry of this.patterns.variableDependent) {
+      const match = entry.trigger.exec(lineText);
+      if (match) {
+        const patternKey = entry.trigger.toString();
+
+        // Check if this pattern is suppressed for this specific line
+        if (lineNumber !== undefined) {
+          const suppressedForLine = this.superpressedPatterns.get(lineNumber);
+          if (suppressedForLine && suppressedForLine.has(patternKey)) {
+            return null; // Skip suppressed patterns
+          }
+        }
+
+        const variableName = match[1];
+        return {
+          type: "variableDependent",
+          key: patternKey,
+          regex: entry.trigger,
+          variableName,
+          suggestion: entry.builder({ variableName }),
+        };
       }
-      // If the suggestion text takes up more lines than the distance to the next content line,
-      // we will use single line suggestion
-      else if (suggestionText.length > nextContentLineDistance) {
-        const numLinesToInsert =
-          suggestionText.length - nextContentLineDistance + 1;
-
-        console.log("MultiLine used");
-
-        await editor.edit((editBuilder) => {
-          // Insert empty lines to create space for the suggestion
-          const insertPosition = new vscode.Position(
-            lineNumber + nextContentLineDistance,
-            0
-          );
-          const newLines = "\n".repeat(numLinesToInsert);
-          editBuilder.insert(insertPosition, newLines);
-        });
-
-        console.log("added extra lines");
-
-        singleLine = false;
-      }
-      // else {
-      //   singleLine = false;
-      //   console.log("No content found, then default to multiLine");
-      // }
-    } else {
-      // If no content line is found, default to multi-line suggestion
-      singleLine = false;
-      console.log("No content found, default multi-line");
     }
 
-    // Now decorate the new lines
-    if (singleLine) {
-      // For single line, combine all suggestion text into one decoration
-      const line = doc.lineAt(lineNumber);
-      const range = new vscode.Range(line.range.start, line.range.end);
+    return null;
+  }
 
-      // Combine all suggestion lines into a single string
-      const combinedSuggestion = suggestionText.join(" ");
+  async showSuggestion(editor, lineNumber, suggestionLines) {
+    const doc = editor.document;
+    const decorations = [];
 
-      decoration.push({
+    // Normalize suggestion to array
+    const lines = Array.isArray(suggestionLines)
+      ? suggestionLines
+      : [suggestionLines];
+
+    // Calculate available space below current line
+    let availableLines = 0;
+    for (let i = lineNumber + 1; i < doc.lineCount; i++) {
+      const line = doc.lineAt(i);
+      if (line.isEmptyOrWhitespace) {
+        availableLines++;
+      } else {
+        break;
+      }
+    }
+
+    // Determine display mode
+    const needsMultiLine = lines.length > 1;
+    const hasEnoughSpace = availableLines >= lines.length - 1;
+    const useSingleLine = needsMultiLine && !hasEnoughSpace;
+
+    if (useSingleLine) {
+      // Single-line mode: combine all text
+      const currentLine = doc.lineAt(lineNumber);
+      const range = new vscode.Range(
+        currentLine.range.start,
+        currentLine.range.end,
+      );
+      const combinedText = lines.join(" ");
+
+      decorations.push({
         range,
         renderOptions: {
           after: {
-            contentText: combinedSuggestion,
+            contentText: combinedText,
           },
         },
       });
     } else {
-      // For multi-line, create separate decorations for each line
-      for (let i = 0; i < suggestionText.length; i++) {
-        const decoratedLineNumber = lineNumber + i;
+      // Multi-line mode: show each line separately
+      for (let i = 0; i < lines.length; i++) {
+        const targetLine = lineNumber + i;
+        if (targetLine >= doc.lineCount) break;
 
-        if (decoratedLineNumber >= doc.lineCount) continue;
-
-        const line = doc.lineAt(decoratedLineNumber);
+        const line = doc.lineAt(targetLine);
         const range = new vscode.Range(line.range.start, line.range.end);
 
-        decoration.push({
+        decorations.push({
           range,
           renderOptions: {
             after: {
-              contentText: suggestionText[i],
+              contentText: lines[i],
             },
           },
         });
       }
     }
 
-    // cursor position
-    // we need to find the trigger word in the line and then set the cursor position to
-    // the end of that word so that the user can continue typing
-    // this is the line where the user typed the trigger word
-    const triigerLine = doc.lineAt(lineNumber);
-    const triggerWord = this.findTriggerWord(triigerLine.text);
-    const triggerEndPosition =
-      triigerLine.text.indexOf(triggerWord) + triggerWord.length;
-    const cursorPosition = new vscode.Position(lineNumber, triggerEndPosition);
-    editor.selection = new vscode.Selection(cursorPosition, cursorPosition);
+    editor.setDecorations(this.greyDecoration, decorations);
 
-    editor.setDecorations(this.greyDecoration, decoration);
-
-    // Store suggestion for acceptance later
+    // Store pending suggestion
     this.pendingSuggestion = {
       line: lineNumber,
-      text: suggestionText.join("\n"),
+      text: lines.join("\n"),
+      lines: lines,
+      displayMode: useSingleLine ? "single" : "multi",
+      patternKey: null, // Will be set when showing suggestion
     };
-    this.activePattern.set(lineNumber, regex);
   }
 
   removeSuggestion(editor) {
-    editor.setDecorations(this.greyDecoration, []);
-    this.pendingSuggestion = { line: null, text: "" };
-  }
-  handleEditorBlur() {
-    // Clear the ghost suggestion when the editor loses focus
-    this.removeSuggestion(vscode.window.activeTextEditor);
+    if (editor) {
+      editor.setDecorations(this.greyDecoration, []);
+    }
+    this.pendingSuggestion = null;
   }
 
-  acceptSuggestion(editor) {
-    if (this.pendingSuggestion.line === null) return;
+  async acceptSuggestion(editor) {
+    if (!this.pendingSuggestion || this.isAccepting) return;
 
-    const line = editor.document.lineAt(this.pendingSuggestion.line);
-    const fullText = line.text + this.pendingSuggestion.text;
+    this.isAccepting = true;
+    const { line: lineNumber, lines } = this.pendingSuggestion;
 
-    editor
-      .edit((editBuilder) => {
-        const range = new vscode.Range(line.range.start, line.range.end);
+    try {
+      const currentLine = editor.document.lineAt(lineNumber);
+      const currentIndent = currentLine.text.match(/^\s*/)[0];
+
+      // Build the full text to insert
+      let fullText = currentLine.text;
+      for (let i = 0; i < lines.length; i++) {
+        const suggestionLine = lines[i];
+        if (i === 0) {
+          // First line: append to current line
+          fullText += suggestionLine;
+        } else {
+          // Subsequent lines: add newline and preserve indentation
+          fullText += "\n" + currentIndent + suggestionLine;
+        }
+      }
+
+      await editor.edit((editBuilder) => {
+        const range = new vscode.Range(
+          currentLine.range.start,
+          currentLine.range.end,
+        );
         editBuilder.replace(range, fullText);
-      })
-      .then(async () => {
-        //cursor
-        const startOffset = editor.document.offsetAt(line.range.start);
-        const endOffset = startOffset + fullText.length;
-        const cursorPos = editor.document.positionAt(endOffset);
-        editor.selection = new vscode.Selection(cursorPos, cursorPos);
-
-        this.acceptedLines.add(this.pendingSuggestion.line);
-
-        // Fix: Remove ghost suggestion cleanly after edit completes
-        setTimeout(async () => {
-          // Format the entire document
-          await vscode.commands.executeCommand("editor.action.formatDocument");
-          this.removeSuggestion(editor);
-        }, 0);
-      })
-      .catch((error) => {
-        console.error("Error accepting suggestion:", error);
       });
+
+      // Mark line as accepted
+      this.acceptedLines.add(lineNumber);
+
+      // Clear the suggestion immediately
+      this.removeSuggestion(editor);
+
+      // Move cursor to end of inserted text
+      const insertedLines = lines.length;
+      const lastLineNumber = lineNumber + insertedLines - 1;
+      const lastLine = editor.document.lineAt(lastLineNumber);
+      const endPosition = new vscode.Position(
+        lastLineNumber,
+        lastLine.text.length,
+      );
+      editor.selection = new vscode.Selection(endPosition, endPosition);
+
+      // Format after a brief delay to ensure edit is complete
+      setTimeout(async () => {
+        try {
+          // Format only the inserted range
+          const startPos = new vscode.Position(lineNumber, 0);
+          const endPos = new vscode.Position(
+            lastLineNumber,
+            editor.document.lineAt(lastLineNumber).text.length,
+          );
+          editor.selection = new vscode.Selection(startPos, endPos);
+          await vscode.commands.executeCommand("editor.action.formatSelection");
+
+          // Restore cursor position at end
+          const finalLine = editor.document.lineAt(lastLineNumber);
+          const finalPos = new vscode.Position(
+            lastLineNumber,
+            finalLine.text.length,
+          );
+          editor.selection = new vscode.Selection(finalPos, finalPos);
+        } catch (error) {
+          console.error("Error formatting:", error);
+        }
+      }, 50);
+    } catch (error) {
+      console.error("Error accepting suggestion:", error);
+    } finally {
+      this.isAccepting = false;
+    }
+  }
+
+  // Helper to find pattern match given line text
+  findPattern(lineText) {
+    for (const category of Object.values(this.patterns)) {
+      for (const entry of category) {
+        const match = entry.trigger.exec(lineText);
+        if (match) {
+          return entry;
+        }
+      }
+    }
+    return null;
   }
 
   handleTextChange(event) {
     const editor = vscode.window.activeTextEditor;
-    //if (!editor || !event.document.fileName.endsWith(".js")) return;
-    if (!editor) return;
+    if (!editor || this.isAccepting) return;
 
     const document = editor.document;
 
     event.contentChanges.forEach((change) => {
-      // check if there is a pattern in activePattern and if there is, then we will checlk
-      // that pattern again aganist the current line of text and if it doest match anymore
-      // then you delete suggested code and set activePattern back to null and continue on
-      // this into code we alr set this this.activePattern = regex;
-      const line = document.lineAt(change.range.start);
+      const lineNumber = change.range.start.line;
+      const line = document.lineAt(lineNumber);
       const lineText = line.text;
 
-      if (change.text === "") {
-        if (this.activePattern.has(line.lineNumber)) {
-          this.activePattern.delete(line.lineNumber);
-          editor.setDecorations(this.greyDecoration, []);
-        }
-        return;
-      }
+      // Handle deletion
+      /*
+      Problem: When you delete a code suggestion and then retype the same code, 
+      the autocomplete suggestion pops up again, which is annoying if you deliberately 
+      rejected it.
+      Solution:Create a feature that remembers when you've deleted a suggestion in a 
+      specific area of your code. Once you delete it, the system won't show that same 
+      suggestion again for those lines, so you can write your code without the ghost text 
+      reappearing.
+      */
 
-      if (this.activePattern.has(line.lineNumber)) {
-        const regex = this.activePattern.get(line.lineNumber);
-        if (!regex.test(lineText)) {
-          editor.setDecorations(this.greyDecoration, []);
-          this.activePattern.delete(line.lineNumber); // Remove the pattern for this line
-          this.pendingSuggestion.line = null;
-          this.pendingSuggestion.text = "";
+      if (change.text === "" && change.rangeLength > 0) {
+        // If there was a pending suggestion when deletion happened, suppress it
+        if (
+          this.pendingSuggestion &&
+          this.pendingSuggestion.line === lineNumber
+        ) {
+          // Suppress the pattern that was being suggested for this line
+          const patternKey = this.pendingSuggestion.patternKey;
+          if (patternKey) {
+            // Store line+pattern combination
+            if (!this.superpressedPatterns.has(lineNumber)) {
+              this.superpressedPatterns.set(lineNumber, new Set());
+            }
+            this.superpressedPatterns.get(lineNumber).add(patternKey);
+            this.removeSuggestion(editor);
+            return;
+          }
         }
-      }
 
-      // if (this.acceptedLines.has(line.lineNumber)) return;
-      if (this.acceptedLines.has(line.lineNumber)) {
-        // Recheck: if line is no longer a match, remove it from acceptedLines
-        // const triggers = Object.keys(this.patterns);
-        const triggers = [
-          ...Object.keys(this.patterns.variableDependent),
-          ...Object.keys(this.patterns.generic),
-        ];
-        const stillMatches = triggers.some((key) => {
-          const regex = new RegExp(`\\b${key}\\b`);
-          return regex.test(lineText);
-        });
-
-        if (!stillMatches) {
-          this.acceptedLines.delete(line.lineNumber);
-        } else {
-          return; // still matches original trigger, so block re-suggestion
-        }
-      }
-
-      if (this.detectDeletion(change)) {
-        const lineNum = change.range.start.line;
-        const lineText = document.lineAt(lineNum).text;
-        if (lineText.trim() === "") {
-          this.acceptedLines.delete(lineNum);
-        }
         this.removeSuggestion(editor);
-        //  this.activePattern.delete(line.lineNumber);
+        this.acceptedLines.delete(lineNumber);
+
+        if (lineText.trim() === "") {
+          this.acceptedLines.delete(lineNumber);
+        }
         return;
       }
 
-      // Check generic patterns **separately**
-      for (const key in this.patterns.generic) {
-        const regex = new RegExp(`\\b${key}\\b`);
-        if (regex.test(lineText)) {
-          //re-check all patterns for the rewritten line:
-          this.activePattern.set(line.lineNumber, regex);
-          this.acceptedLines.delete(line.lineNumber);
-          this.showSuggestion(
-            editor,
-            line.lineNumber,
-            this.patterns.generic[key],
-            regex
-          );
-          vscode.window.showInformationMessage(
-            `AntiCopilot suggestion for "${key}"`
-          );
-          break;
+      // If line was previously accepted, check if it still matches
+      if (this.acceptedLines.has(lineNumber)) {
+        const match = this.findTriggerMatch(lineText, lineNumber);
+        if (!match) {
+          this.acceptedLines.delete(lineNumber);
+        } else {
+          return; // Still matches, don't re-suggest
         }
       }
 
-      // Check variable-dependent patterns
-      for (const key in this.patterns.variableDependent) {
-        const regex = new RegExp(`\\b${key}\\s+(\\w+)\\b`);
-        const match = regex.exec(lineText);
+      //Check for new pattern matches
+      const match = this.findTriggerMatch(lineText, lineNumber);
 
-        if (match) {
-          const variableName = match[1];
-          this.activePattern.set(line.lineNumber, regex);
-          this.acceptedLines.delete(line.lineNumber);
-
-          const suggestion = this.patterns.variableDependent[key]({
-            variableName,
-          });
-          this.showSuggestion(editor, line.lineNumber, suggestion, regex);
-          vscode.window.showInformationMessage(
-            `AntiCopilot: Variable pattern matched for "${key}" with variable "${variableName}"`
-          );
-          break; // Stop checking other variable-dependent patterns
+      if (match) {
+        // Remove old suggestion if exists
+        if (this.pendingSuggestion) {
+          this.removeSuggestion(editor);
         }
+
+        // Show new suggestion
+        this.showSuggestion(editor, lineNumber, match.suggestion);
+
+        // Store pattern key for suppression tracking
+        if (this.pendingSuggestion) {
+          this.pendingSuggestion.patternKey = match.key;
+        }
+
+        // Show notification
+        const varInfo =
+          match.type === "variableDependent"
+            ? ` with variable "${match.variableName}"`
+            : "";
+        vscode.window.showInformationMessage(
+          `FaultyAI suggestion for "${match.key}"${varInfo}`,
+        );
+      } else if (
+        this.pendingSuggestion &&
+        this.pendingSuggestion.line === lineNumber
+      ) {
+        // Line no longer matches, remove suggestion
+        this.removeSuggestion(editor);
       }
     });
-  }
-
-  detectDeletion(change) {
-    return change.text === "" && change.rangeLength > 0;
   }
 }
 
 let controller;
 
 function activate(context) {
-  console.log("AntiCopilot extension activated!");
+  console.log("FaultyAI extension activated!");
 
   controller = new SuggestionController();
 
-  // Register hover provider
+  // Hover provider for showing full suggestion
   context.subscriptions.push(
     vscode.languages.registerHoverProvider(
       { scheme: "file", language: "java" },
       {
         provideHover(document, position) {
-          // Check if there's a pending suggestion for the current line
-          const editor = vscode.window.activeTextEditor;
-          if (!editor || !controller.pendingSuggestion.text) return;
+          if (!controller.pendingSuggestion) return;
 
-          const line = editor.document.lineAt(position.line);
-          if (line.lineNumber === controller.pendingSuggestion.line) {
+          const lineNumber = position.line;
+          if (lineNumber === controller.pendingSuggestion.line) {
             return new vscode.Hover(
-              `Full Suggestion:\n\`\`\`java\n${controller.pendingSuggestion.text}\n\`\`\``
+              `**FaultyAI Suggestion** (Press Tab to accept)\n\`\`\`java\n${controller.pendingSuggestion.text}\n\`\`\``,
             );
           }
         },
-      }
-    )
+      },
+    ),
   );
 
+  // Text change listener
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) =>
-      controller.handleTextChange(event)
-    )
+      controller.handleTextChange(event),
+    ),
   );
+
+  // Editor focus change
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((newEditor) => {
       if (!newEditor) {
-        // Editor lost focus entirely (e.g., clicked sidebar or outside VSCode)
-        controller.handleEditorBlur();
-      } else {
-        // Optionally handle switching between editors
-        console.log("Switched to a new editor:", newEditor.document.fileName);
+        controller.removeSuggestion(vscode.window.activeTextEditor);
       }
-    })
+    }),
   );
 
+  // Accept suggestion command
   context.subscriptions.push(
     vscode.commands.registerCommand("faultyai.acceptSuggestion", () => {
       const editor = vscode.window.activeTextEditor;
       if (editor) {
         controller.acceptSuggestion(editor);
       }
-    })
+    }),
   );
 }
 
-function deactivate() {}
+function deactivate() {
+  if (controller) {
+    controller.removeSuggestion(vscode.window.activeTextEditor);
+  }
+}
 
 module.exports = {
   activate,
