@@ -15,7 +15,10 @@ class SuggestionController {
     this.pendingSuggestion = null;
     this.acceptedLines = new Set();
     this.isAccepting = false;
+    this.isAdjustingPreviewSpace = false;
+    this.suggestionRequestId = 0;
     this.superpressedPatterns = new Map(); // Map: lineNumber -> Set of pattern keys
+    this.previewSpacer = null; // { anchorLine: number, count: number }
   }
 
   removeLeadingTokens(text, tokens) {
@@ -24,6 +27,141 @@ class SuggestionController {
       if (t && text.startsWith(t)) return text.slice(t.length);
     }
     return text;
+  }
+
+  getIndentUnit(editor) {
+    const insertSpaces = editor.options.insertSpaces !== false;
+    const tabSize = Number(editor.options.tabSize) || 2;
+    return insertSpaces ? " ".repeat(tabSize) : "\t";
+  }
+
+  buildIndentedSuggestionLines(editor, lineNumber, lines) {
+    if (!Array.isArray(lines) || lines.length === 0) return [];
+
+    const baseIndent = editor.document.lineAt(lineNumber).text.match(/^\s*/)[0];
+    const indentUnit = this.getIndentUnit(editor);
+    const result = [];
+    let blockDepth = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const rawLine = String(lines[i] ?? "");
+
+      if (i === 0) {
+        result.push(rawLine);
+        if (/\{\s*$/.test(rawLine.trim())) {
+          blockDepth = 1;
+        }
+        continue;
+      }
+
+      const trimmedLine = rawLine.trimStart();
+      if (trimmedLine.length === 0) {
+        result.push(baseIndent + indentUnit.repeat(blockDepth));
+        continue;
+      }
+
+      if (/^[}\])]/.test(trimmedLine)) {
+        blockDepth = Math.max(0, blockDepth - 1);
+      }
+
+      result.push(baseIndent + indentUnit.repeat(blockDepth) + trimmedLine);
+
+      if (/\{\s*$/.test(trimmedLine)) {
+        blockDepth += 1;
+      }
+    }
+
+    return result;
+  }
+
+  renderDecorationWhitespace(editor, line) {
+    const tabSize = Number(editor.options.tabSize) || 2;
+    return line.replace(/^[ \t]+/, (leading) =>
+      leading.replace(/\t/g, " ".repeat(tabSize)).replace(/ /g, "\u00A0"),
+    );
+  }
+
+  countAvailableEmptyLines(doc, lineNumber) {
+    let availableLines = 0;
+    for (let i = lineNumber + 1; i < doc.lineCount; i++) {
+      const line = doc.lineAt(i);
+      if (line.isEmptyOrWhitespace) {
+        availableLines++;
+      } else {
+        break;
+      }
+    }
+    return availableLines;
+  }
+
+  async clearPreviewSpace(editor) {
+    if (!editor || !this.previewSpacer) return;
+
+    const { anchorLine, count } = this.previewSpacer;
+    if (count <= 0) {
+      this.previewSpacer = null;
+      return;
+    }
+
+    const doc = editor.document;
+    if (anchorLine >= doc.lineCount) {
+      this.previewSpacer = null;
+      return;
+    }
+
+    const endLine = Math.min(anchorLine + count, doc.lineCount - 1);
+    const deleteRange = new vscode.Range(
+      new vscode.Position(anchorLine, 0),
+      new vscode.Position(endLine, 0),
+    );
+
+    this.isAdjustingPreviewSpace = true;
+    try {
+      await editor.edit((editBuilder) => {
+        editBuilder.delete(deleteRange);
+      });
+    } catch (error) {
+      console.error("Error clearing preview space:", error);
+    } finally {
+      this.isAdjustingPreviewSpace = false;
+      this.previewSpacer = null;
+    }
+  }
+
+  async ensurePreviewSpace(editor, lineNumber, requiredExtraLines) {
+    if (!editor || requiredExtraLines <= 0) return;
+
+    const anchorLine = lineNumber + 1;
+    if (this.previewSpacer && this.previewSpacer.anchorLine !== anchorLine) {
+      await this.clearPreviewSpace(editor);
+    }
+
+    const doc = editor.document;
+    if (anchorLine > doc.lineCount) return;
+
+    const availableLines = this.countAvailableEmptyLines(doc, lineNumber);
+    const needed = requiredExtraLines - availableLines;
+    if (needed <= 0) return;
+
+    const insertPosition = new vscode.Position(anchorLine, 0);
+    const spacerText = "\n".repeat(needed);
+
+    this.isAdjustingPreviewSpace = true;
+    try {
+      await editor.edit((editBuilder) => {
+        editBuilder.insert(insertPosition, spacerText);
+      });
+
+      if (this.previewSpacer && this.previewSpacer.anchorLine === anchorLine) {
+        this.previewSpacer.count += needed;
+      } else {
+        this.previewSpacer = { anchorLine, count: needed };
+      }
+    } catch (error) {
+      console.error("Error creating preview space:", error);
+    } finally {
+      this.isAdjustingPreviewSpace = false;
+    }
   }
 
   findTriggerMatch(lineText, lineNumber) {
@@ -82,7 +220,13 @@ class SuggestionController {
     return null;
   }
 
-  async showSuggestion(editor, lineNumber, suggestionLines) {
+  async showSuggestion(
+    editor,
+    lineNumber,
+    suggestionLines,
+    patternKey = null,
+    requestId = null,
+  ) {
     const doc = editor.document;
     const decorations = [];
 
@@ -90,22 +234,29 @@ class SuggestionController {
     const lines = Array.isArray(suggestionLines)
       ? suggestionLines
       : [suggestionLines];
+    const indentedLines = this.buildIndentedSuggestionLines(
+      editor,
+      lineNumber,
+      lines,
+    );
+    const displayLines = indentedLines.map((line) =>
+      this.renderDecorationWhitespace(editor, line),
+    );
 
-    // Calculate available space below current line
-    let availableLines = 0;
-    for (let i = lineNumber + 1; i < doc.lineCount; i++) {
-      const line = doc.lineAt(i);
-      if (line.isEmptyOrWhitespace) {
-        availableLines++;
-      } else {
-        break;
-      }
+    if (lines.length > 1) {
+      await this.ensurePreviewSpace(editor, lineNumber, lines.length - 1);
+    }
+
+    // Ignore stale async renders.
+    if (requestId !== null && requestId !== this.suggestionRequestId) {
+      return;
     }
 
     // Determine display mode
     const needsMultiLine = lines.length > 1;
-    const hasEnoughSpace = availableLines >= lines.length - 1;
-    const useSingleLine = needsMultiLine && !hasEnoughSpace;
+    const hasEnoughSpace =
+      this.countAvailableEmptyLines(doc, lineNumber) >= lines.length - 1;
+    const useSingleLine = needsMultiLine ? !hasEnoughSpace : false;
 
     if (useSingleLine) {
       // Single-line mode: combine all text
@@ -114,7 +265,7 @@ class SuggestionController {
         currentLine.range.start,
         currentLine.range.end,
       );
-      const combinedText = lines.join(" ");
+      const combinedText = displayLines.join(" ");
 
       decorations.push({
         range,
@@ -126,7 +277,7 @@ class SuggestionController {
       });
     } else {
       // Multi-line mode: show each line separately
-      for (let i = 0; i < lines.length; i++) {
+      for (let i = 0; i < displayLines.length; i++) {
         const targetLine = lineNumber + i;
         if (targetLine >= doc.lineCount) break;
 
@@ -137,7 +288,7 @@ class SuggestionController {
           range,
           renderOptions: {
             after: {
-              contentText: lines[i],
+              contentText: displayLines[i],
             },
           },
         });
@@ -149,16 +300,18 @@ class SuggestionController {
     // Store pending suggestion
     this.pendingSuggestion = {
       line: lineNumber,
-      text: lines.join("\n"),
+      text: indentedLines.join("\n"),
       lines: lines,
       displayMode: useSingleLine ? "single" : "multi",
-      patternKey: null, // Will be set when showing suggestion
+      patternKey,
     };
   }
 
   removeSuggestion(editor) {
+    this.suggestionRequestId += 1;
     if (editor) {
       editor.setDecorations(this.greyDecoration, []);
+      void this.clearPreviewSpace(editor);
     }
     this.pendingSuggestion = null;
   }
@@ -170,19 +323,25 @@ class SuggestionController {
     const { line: lineNumber, lines } = this.pendingSuggestion;
 
     try {
+      await this.clearPreviewSpace(editor);
+
       const currentLine = editor.document.lineAt(lineNumber);
-      const currentIndent = currentLine.text.match(/^\s*/)[0];
+      const indentedLines = this.buildIndentedSuggestionLines(
+        editor,
+        lineNumber,
+        lines,
+      );
 
       // Build the full text to insert
       let fullText = currentLine.text;
-      for (let i = 0; i < lines.length; i++) {
-        const suggestionLine = lines[i];
+      for (let i = 0; i < indentedLines.length; i++) {
+        const suggestionLine = indentedLines[i];
         if (i === 0) {
           // First line: append to current line
           fullText += suggestionLine;
         } else {
-          // Subsequent lines: add newline and preserve indentation
-          fullText += "\n" + currentIndent + suggestionLine;
+          // Subsequent lines are already fully indented
+          fullText += "\n" + suggestionLine;
         }
       }
 
@@ -211,28 +370,32 @@ class SuggestionController {
       editor.selection = new vscode.Selection(endPosition, endPosition);
 
       // Format after a brief delay to ensure edit is complete
-      setTimeout(async () => {
-        try {
-          // Format only the inserted range
-          const startPos = new vscode.Position(lineNumber, 0);
-          const endPos = new vscode.Position(
-            lastLineNumber,
-            editor.document.lineAt(lastLineNumber).text.length,
-          );
-          editor.selection = new vscode.Selection(startPos, endPos);
-          await vscode.commands.executeCommand("editor.action.formatSelection");
+      if (lines.length > 1) {
+        setTimeout(async () => {
+          try {
+            // Format only the inserted range for multiline suggestions
+            const startPos = new vscode.Position(lineNumber, 0);
+            const endPos = new vscode.Position(
+              lastLineNumber,
+              editor.document.lineAt(lastLineNumber).text.length,
+            );
+            editor.selection = new vscode.Selection(startPos, endPos);
+            await vscode.commands.executeCommand(
+              "editor.action.formatSelection",
+            );
 
-          // Restore cursor position at end
-          const finalLine = editor.document.lineAt(lastLineNumber);
-          const finalPos = new vscode.Position(
-            lastLineNumber,
-            finalLine.text.length,
-          );
-          editor.selection = new vscode.Selection(finalPos, finalPos);
-        } catch (error) {
-          console.error("Error formatting:", error);
-        }
-      }, 50);
+            // Restore cursor position at end
+            const finalLine = editor.document.lineAt(lastLineNumber);
+            const finalPos = new vscode.Position(
+              lastLineNumber,
+              finalLine.text.length,
+            );
+            editor.selection = new vscode.Selection(finalPos, finalPos);
+          } catch (error) {
+            console.error("Error formatting:", error);
+          }
+        }, 50);
+      }
     } catch (error) {
       console.error("Error accepting suggestion:", error);
     } finally {
@@ -255,7 +418,7 @@ class SuggestionController {
 
   handleTextChange(event) {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || this.isAccepting) return;
+    if (!editor || this.isAccepting || this.isAdjustingPreviewSpace) return;
 
     const document = editor.document;
     let pastLineNumber = 0;
@@ -352,7 +515,14 @@ class SuggestionController {
 
           console.log("Res = " + res + "ResFinal = " + resFinal);
 
-          this.showSuggestion(editor, lineNumber, resFinal);
+          const requestId = ++this.suggestionRequestId;
+          void this.showSuggestion(
+            editor,
+            lineNumber,
+            resFinal,
+            match.key,
+            requestId,
+          );
           pastLineNumber += 1;
         } else {
           // Single line: just process the string
@@ -363,12 +533,14 @@ class SuggestionController {
 
           console.log("Res = " + res + "ResFinal = " + resFinal);
 
-          this.showSuggestion(editor, lineNumber, [resFinal]);
-        }
-
-        // Store pattern key for suppression tracking
-        if (this.pendingSuggestion) {
-          this.pendingSuggestion.patternKey = match.key;
+          const requestId = ++this.suggestionRequestId;
+          void this.showSuggestion(
+            editor,
+            lineNumber,
+            [resFinal],
+            match.key,
+            requestId,
+          );
         }
 
         // Show notification
