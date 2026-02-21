@@ -16,6 +16,7 @@ class SuggestionController {
     this.acceptedLines = new Set();
     this.isAccepting = false;
     this.isAdjustingPreviewSpace = false;
+    this.suggestionRequestId = 0;
     this.superpressedPatterns = new Map(); // Map: lineNumber -> Set of pattern keys
     this.previewSpacer = null; // { anchorLine: number, count: number }
   }
@@ -219,7 +220,13 @@ class SuggestionController {
     return null;
   }
 
-  async showSuggestion(editor, lineNumber, suggestionLines) {
+  async showSuggestion(
+    editor,
+    lineNumber,
+    suggestionLines,
+    patternKey = null,
+    requestId = null,
+  ) {
     const doc = editor.document;
     const decorations = [];
 
@@ -238,6 +245,11 @@ class SuggestionController {
 
     if (lines.length > 1) {
       await this.ensurePreviewSpace(editor, lineNumber, lines.length - 1);
+    }
+
+    // Ignore stale async renders.
+    if (requestId !== null && requestId !== this.suggestionRequestId) {
+      return;
     }
 
     // Determine display mode
@@ -291,11 +303,12 @@ class SuggestionController {
       text: indentedLines.join("\n"),
       lines: lines,
       displayMode: useSingleLine ? "single" : "multi",
-      patternKey: null, // Will be set when showing suggestion
+      patternKey,
     };
   }
 
   removeSuggestion(editor) {
+    this.suggestionRequestId += 1;
     if (editor) {
       editor.setDecorations(this.greyDecoration, []);
       void this.clearPreviewSpace(editor);
@@ -502,7 +515,14 @@ class SuggestionController {
 
           console.log("Res = " + res + "ResFinal = " + resFinal);
 
-          this.showSuggestion(editor, lineNumber, resFinal);
+          const requestId = ++this.suggestionRequestId;
+          void this.showSuggestion(
+            editor,
+            lineNumber,
+            resFinal,
+            match.key,
+            requestId,
+          );
           pastLineNumber += 1;
         } else {
           // Single line: just process the string
@@ -513,12 +533,14 @@ class SuggestionController {
 
           console.log("Res = " + res + "ResFinal = " + resFinal);
 
-          this.showSuggestion(editor, lineNumber, [resFinal]);
-        }
-
-        // Store pattern key for suppression tracking
-        if (this.pendingSuggestion) {
-          this.pendingSuggestion.patternKey = match.key;
+          const requestId = ++this.suggestionRequestId;
+          void this.showSuggestion(
+            editor,
+            lineNumber,
+            [resFinal],
+            match.key,
+            requestId,
+          );
         }
 
         // Show notification
