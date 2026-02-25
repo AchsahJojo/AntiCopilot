@@ -72,7 +72,7 @@ function deactivate() {
     bracketsManager.restoreWorkspaceSettings();
   }
 }
-
+//hello!
 module.exports = {
   activate,
   deactivate,
