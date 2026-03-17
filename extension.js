@@ -1,5 +1,5 @@
 const vscode = require("vscode");
-const { SuggestionController } = require("./src/SuggestionController");
+const { SuggestionController } = require("./out/src/SuggestionController");
 const {
   AutoClosingBracketsManager,
 } = require("./src/AutoClosingBracketsManager");

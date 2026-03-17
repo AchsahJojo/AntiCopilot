@@ -1,7 +1,67 @@
-const vscode = require("vscode");
-const { createPatterns } = require("./patterns");
+import * as vscode from "vscode";
 
-class SuggestionController {
+type SuggestionValue = string | string[];
+
+interface GenericPatternEntry {
+  trigger: RegExp;
+  suggestion: SuggestionValue | ((args: { match: RegExpExecArray }) => SuggestionValue);
+}
+
+interface VariableDependentPatternEntry {
+  trigger: RegExp;
+  builder: (args: { variableName: string; match?: RegExpExecArray }) => SuggestionValue;
+}
+
+interface Patterns {
+  generic: GenericPatternEntry[];
+  variableDependent: VariableDependentPatternEntry[];
+}
+
+interface PreviewSpacer {
+  anchorLine: number;
+  count: number;
+}
+
+interface PendingSuggestion {
+  line: number;
+  text: string;
+  lines: string[];
+  displayMode: "single" | "multi";
+  patternKey: string | null;
+}
+
+interface GenericTriggerMatch {
+  type: "generic";
+  key: string;
+  regex: RegExp;
+  suggestion: string[];
+}
+
+interface VariableDependentTriggerMatch {
+  type: "variableDependent";
+  key: string;
+  regex: RegExp;
+  variableName: string;
+  suggestion: string[];
+}
+
+type TriggerMatch = GenericTriggerMatch | VariableDependentTriggerMatch;
+
+const { createPatterns } = require("./patterns") as {
+  createPatterns: () => Patterns;
+};
+
+export class SuggestionController {
+  private greyDecoration: vscode.TextEditorDecorationType;
+  private patterns: Patterns;
+  public pendingSuggestion: PendingSuggestion | null;
+  private acceptedLines: Set<number>;
+  private isAccepting: boolean;
+  private isAdjustingPreviewSpace: boolean;
+  private suggestionRequestId: number;
+  private superpressedPatterns: Map<number, Set<string>>;
+  private previewSpacer: PreviewSpacer | null;
+
   constructor() {
     this.greyDecoration = vscode.window.createTextEditorDecorationType({
       after: {
@@ -17,33 +77,47 @@ class SuggestionController {
     this.isAccepting = false;
     this.isAdjustingPreviewSpace = false;
     this.suggestionRequestId = 0;
-    this.superpressedPatterns = new Map(); // Map: lineNumber -> Set of pattern keys
-    this.previewSpacer = null; // { anchorLine: number, count: number }
+    this.superpressedPatterns = new Map();
+    this.previewSpacer = null;
   }
 
-  removeLeadingTokens(text, tokens) {
+  private normalizeSuggestionLines(suggestion: SuggestionValue): string[] {
+    const lines = Array.isArray(suggestion) ? suggestion : [suggestion];
+    return lines.map((line) => String(line ?? ""));
+  }
+
+  private removeLeadingTokens(text: string, tokens: string[]): string {
     const sorted = [...tokens].sort((a, b) => b.length - a.length);
-    for (const t of sorted) {
-      if (t && text.startsWith(t)) return text.slice(t.length);
+    for (const token of sorted) {
+      if (token && text.startsWith(token)) {
+        return text.slice(token.length);
+      }
     }
+
     return text;
   }
 
-  getIndentUnit(editor) {
+  private getIndentUnit(editor: vscode.TextEditor): string {
     const insertSpaces = editor.options.insertSpaces !== false;
     const tabSize = Number(editor.options.tabSize) || 2;
     return insertSpaces ? " ".repeat(tabSize) : "\t";
   }
 
-  buildIndentedSuggestionLines(editor, lineNumber, lines) {
-    if (!Array.isArray(lines) || lines.length === 0) return [];
+  private buildIndentedSuggestionLines(
+    editor: vscode.TextEditor,
+    lineNumber: number,
+    lines: string[],
+  ): string[] {
+    if (!Array.isArray(lines) || lines.length === 0) {
+      return [];
+    }
 
-    const baseIndent = editor.document.lineAt(lineNumber).text.match(/^\s*/)[0];
+    const baseIndent = editor.document.lineAt(lineNumber).text.match(/^\s*/)![0];
     const indentUnit = this.getIndentUnit(editor);
-    const result = [];
+    const result: string[] = [];
     let blockDepth = 0;
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = 0; i < lines.length; i += 1) {
       const rawLine = String(lines[i] ?? "");
 
       if (i === 0) {
@@ -74,28 +148,31 @@ class SuggestionController {
     return result;
   }
 
-  renderDecorationWhitespace(editor, line) {
+  private renderDecorationWhitespace(editor: vscode.TextEditor, line: string): string {
     const tabSize = Number(editor.options.tabSize) || 2;
     return line.replace(/^[ \t]+/, (leading) =>
       leading.replace(/\t/g, " ".repeat(tabSize)).replace(/ /g, "\u00A0"),
     );
   }
 
-  countAvailableEmptyLines(doc, lineNumber) {
+  private countAvailableEmptyLines(doc: vscode.TextDocument, lineNumber: number): number {
     let availableLines = 0;
-    for (let i = lineNumber + 1; i < doc.lineCount; i++) {
+    for (let i = lineNumber + 1; i < doc.lineCount; i += 1) {
       const line = doc.lineAt(i);
       if (line.isEmptyOrWhitespace) {
-        availableLines++;
+        availableLines += 1;
       } else {
         break;
       }
     }
+
     return availableLines;
   }
 
-  async clearPreviewSpace(editor) {
-    if (!editor || !this.previewSpacer) return;
+  private async clearPreviewSpace(editor: vscode.TextEditor | undefined): Promise<void> {
+    if (!editor || !this.previewSpacer) {
+      return;
+    }
 
     const { anchorLine, count } = this.previewSpacer;
     if (count <= 0) {
@@ -128,8 +205,14 @@ class SuggestionController {
     }
   }
 
-  async ensurePreviewSpace(editor, lineNumber, requiredExtraLines) {
-    if (!editor || requiredExtraLines <= 0) return;
+  private async ensurePreviewSpace(
+    editor: vscode.TextEditor | undefined,
+    lineNumber: number,
+    requiredExtraLines: number,
+  ): Promise<void> {
+    if (!editor || requiredExtraLines <= 0) {
+      return;
+    }
 
     const anchorLine = lineNumber + 1;
     if (this.previewSpacer && this.previewSpacer.anchorLine !== anchorLine) {
@@ -137,11 +220,15 @@ class SuggestionController {
     }
 
     const doc = editor.document;
-    if (anchorLine > doc.lineCount) return;
+    if (anchorLine > doc.lineCount) {
+      return;
+    }
 
     const availableLines = this.countAvailableEmptyLines(doc, lineNumber);
     const needed = requiredExtraLines - availableLines;
-    if (needed <= 0) return;
+    if (needed <= 0) {
+      return;
+    }
 
     const insertPosition = new vscode.Position(anchorLine, 0);
     const spacerText = "\n".repeat(needed);
@@ -164,81 +251,73 @@ class SuggestionController {
     }
   }
 
-  findTriggerMatch(lineText, lineNumber) {
-    // Check generic patterns first (regex-driven)
+  private findTriggerMatch(lineText: string, lineNumber?: number): TriggerMatch | null {
     for (const entry of this.patterns.generic) {
       const match = entry.trigger.exec(lineText);
-      if (match) {
-        const patternKey = entry.trigger.toString();
-
-        // Check if this pattern is suppressed for this specific line
-        if (lineNumber !== undefined) {
-          const suppressedForLine = this.superpressedPatterns.get(lineNumber);
-          if (suppressedForLine && suppressedForLine.has(patternKey)) {
-            return null; // Skip suppressed patterns
-          }
-        }
-
-        const suggestion =
-          typeof entry.suggestion === "function"
-            ? entry.suggestion({ match })
-            : entry.suggestion;
-        return {
-          type: "generic",
-          key: patternKey,
-          regex: entry.trigger,
-          suggestion,
-        };
+      if (!match) {
+        continue;
       }
+
+      const patternKey = entry.trigger.toString();
+      if (lineNumber !== undefined) {
+        const suppressedForLine = this.superpressedPatterns.get(lineNumber);
+        if (suppressedForLine && suppressedForLine.has(patternKey)) {
+          return null;
+        }
+      }
+
+      const suggestionValue =
+        typeof entry.suggestion === "function"
+          ? entry.suggestion({ match })
+          : entry.suggestion;
+
+      return {
+        type: "generic",
+        key: patternKey,
+        regex: entry.trigger,
+        suggestion: this.normalizeSuggestionLines(suggestionValue),
+      };
     }
 
-    // Check variable-dependent patterns
     for (const entry of this.patterns.variableDependent) {
       const match = entry.trigger.exec(lineText);
-      if (match) {
-        const patternKey = entry.trigger.toString();
-
-        // Check if this pattern is suppressed for this specific line
-        if (lineNumber !== undefined) {
-          const suppressedForLine = this.superpressedPatterns.get(lineNumber);
-          if (suppressedForLine && suppressedForLine.has(patternKey)) {
-            return null; // Skip suppressed patterns
-          }
-        }
-
-        const variableName = match[1];
-        return {
-          type: "variableDependent",
-          key: patternKey,
-          regex: entry.trigger,
-          variableName,
-          suggestion: entry.builder({ variableName }),
-        };
+      if (!match) {
+        continue;
       }
+
+      const patternKey = entry.trigger.toString();
+      if (lineNumber !== undefined) {
+        const suppressedForLine = this.superpressedPatterns.get(lineNumber);
+        if (suppressedForLine && suppressedForLine.has(patternKey)) {
+          return null;
+        }
+      }
+
+      const variableName = String(match[1] ?? "");
+      return {
+        type: "variableDependent",
+        key: patternKey,
+        regex: entry.trigger,
+        variableName,
+        suggestion: this.normalizeSuggestionLines(entry.builder({ variableName })),
+      };
     }
 
     return null;
   }
 
-  async showSuggestion(
-    editor,
-    lineNumber,
-    suggestionLines,
-    patternKey = null,
-    requestId = null,
-  ) {
+  private async showSuggestion(
+    editor: vscode.TextEditor,
+    lineNumber: number,
+    suggestionLines: string[] | string,
+    patternKey: string | null = null,
+    requestId: number | null = null,
+  ): Promise<void> {
     const doc = editor.document;
-    const decorations = [];
+    const decorations: vscode.DecorationOptions[] = [];
 
-    // Normalize suggestion to array
-    const lines = Array.isArray(suggestionLines)
-      ? suggestionLines
-      : [suggestionLines];
-    const indentedLines = this.buildIndentedSuggestionLines(
-      editor,
-      lineNumber,
-      lines,
-    );
+    const lines = this.normalizeSuggestionLines(suggestionLines);
+    const indentedLines = this.buildIndentedSuggestionLines(editor, lineNumber, lines);
     const displayLines = indentedLines.map((line) =>
       this.renderDecorationWhitespace(editor, line),
     );
@@ -247,19 +326,16 @@ class SuggestionController {
       await this.ensurePreviewSpace(editor, lineNumber, lines.length - 1);
     }
 
-    // Ignore stale async renders.
     if (requestId !== null && requestId !== this.suggestionRequestId) {
       return;
     }
 
-    // Determine display mode
     const needsMultiLine = lines.length > 1;
     const hasEnoughSpace =
       this.countAvailableEmptyLines(doc, lineNumber) >= lines.length - 1;
     const useSingleLine = needsMultiLine ? !hasEnoughSpace : false;
 
     if (useSingleLine) {
-      // Single-line mode: combine all text
       const currentLine = doc.lineAt(lineNumber);
       const range = new vscode.Range(
         currentLine.range.start,
@@ -276,10 +352,11 @@ class SuggestionController {
         },
       });
     } else {
-      // Multi-line mode: show each line separately
-      for (let i = 0; i < displayLines.length; i++) {
+      for (let i = 0; i < displayLines.length; i += 1) {
         const targetLine = lineNumber + i;
-        if (targetLine >= doc.lineCount) break;
+        if (targetLine >= doc.lineCount) {
+          break;
+        }
 
         const line = doc.lineAt(targetLine);
         const range = new vscode.Range(line.range.start, line.range.end);
@@ -297,27 +374,29 @@ class SuggestionController {
 
     editor.setDecorations(this.greyDecoration, decorations);
 
-    // Store pending suggestion
     this.pendingSuggestion = {
       line: lineNumber,
       text: indentedLines.join("\n"),
-      lines: lines,
+      lines,
       displayMode: useSingleLine ? "single" : "multi",
       patternKey,
     };
   }
 
-  removeSuggestion(editor) {
+  public removeSuggestion(editor: vscode.TextEditor | undefined): void {
     this.suggestionRequestId += 1;
     if (editor) {
       editor.setDecorations(this.greyDecoration, []);
       void this.clearPreviewSpace(editor);
     }
+
     this.pendingSuggestion = null;
   }
 
-  async acceptSuggestion(editor) {
-    if (!this.pendingSuggestion || this.isAccepting) return;
+  public async acceptSuggestion(editor: vscode.TextEditor): Promise<void> {
+    if (!this.pendingSuggestion || this.isAccepting) {
+      return;
+    }
 
     this.isAccepting = true;
     const { line: lineNumber, lines } = this.pendingSuggestion;
@@ -332,16 +411,13 @@ class SuggestionController {
         lines,
       );
 
-      // Build the full text to insert
       let fullText = currentLine.text;
-      for (let i = 0; i < indentedLines.length; i++) {
+      for (let i = 0; i < indentedLines.length; i += 1) {
         const suggestionLine = indentedLines[i];
         if (i === 0) {
-          // First line: append to current line
           fullText += suggestionLine;
         } else {
-          // Subsequent lines are already fully indented
-          fullText += "\n" + suggestionLine;
+          fullText += `\n${suggestionLine}`;
         }
       }
 
@@ -353,13 +429,9 @@ class SuggestionController {
         editBuilder.replace(range, fullText);
       });
 
-      // Mark line as accepted
       this.acceptedLines.add(lineNumber);
-
-      // Clear the suggestion immediately
       this.removeSuggestion(editor);
 
-      // Move cursor to end of inserted text
       const insertedLines = lines.length;
       const lastLineNumber = lineNumber + insertedLines - 1;
       const lastLine = editor.document.lineAt(lastLineNumber);
@@ -369,11 +441,9 @@ class SuggestionController {
       );
       editor.selection = new vscode.Selection(endPosition, endPosition);
 
-      // Format after a brief delay to ensure edit is complete
       if (lines.length > 1) {
         setTimeout(async () => {
           try {
-            // Format only the inserted range for multiline suggestions
             const startPos = new vscode.Position(lineNumber, 0);
             const endPos = new vscode.Position(
               lastLineNumber,
@@ -384,7 +454,6 @@ class SuggestionController {
               "editor.action.formatSelection",
             );
 
-            // Restore cursor position at end
             const finalLine = editor.document.lineAt(lastLineNumber);
             const finalPos = new vscode.Position(
               lastLineNumber,
@@ -403,8 +472,7 @@ class SuggestionController {
     }
   }
 
-  // Helper to find pattern match given line text
-  findPattern(lineText) {
+  private findPattern(lineText: string): GenericPatternEntry | VariableDependentPatternEntry | null {
     for (const category of Object.values(this.patterns)) {
       for (const entry of category) {
         const match = entry.trigger.exec(lineText);
@@ -413,46 +481,34 @@ class SuggestionController {
         }
       }
     }
+
     return null;
   }
 
-  handleTextChange(event) {
+  public handleTextChange(event: vscode.TextDocumentChangeEvent): void {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || this.isAccepting || this.isAdjustingPreviewSpace) return;
+    if (!editor || this.isAccepting || this.isAdjustingPreviewSpace) {
+      return;
+    }
 
     const document = editor.document;
-    let pastLineNumber = 0;
 
     event.contentChanges.forEach((change) => {
       const lineNumber = change.range.start.line;
       const line = document.lineAt(lineNumber);
       const lineText = line.text;
 
-      // Handle deletion
-      /*
-      Problem: When you delete a code suggestion and then retype the same code, 
-      the autocomplete suggestion pops up again, which is annoying if you deliberately 
-      rejected it.
-      Solution:Create a feature that remembers when you've deleted a suggestion in a 
-      specific area of your code. Once you delete it, the system won't show that same 
-      suggestion again for those lines, so you can write your code without the ghost text 
-      reappearing.
-      */
-
       if (change.text === "" && change.rangeLength > 0) {
-        // If there was a pending suggestion when deletion happened, suppress it
         if (
           this.pendingSuggestion &&
           this.pendingSuggestion.line === lineNumber
         ) {
-          // Suppress the pattern that was being suggested for this line
           const patternKey = this.pendingSuggestion.patternKey;
           if (patternKey) {
-            // Store line+pattern combination
             if (!this.superpressedPatterns.has(lineNumber)) {
               this.superpressedPatterns.set(lineNumber, new Set());
             }
-            this.superpressedPatterns.get(lineNumber).add(patternKey);
+            this.superpressedPatterns.get(lineNumber)?.add(patternKey);
             this.removeSuggestion(editor);
             return;
           }
@@ -467,53 +523,37 @@ class SuggestionController {
         return;
       }
 
-      // If line was previously accepted, check if it still matches
       if (this.acceptedLines.has(lineNumber)) {
         const match = this.findTriggerMatch(lineText, lineNumber);
         if (!match) {
           this.acceptedLines.delete(lineNumber);
         } else {
-          return; // Still matches, don't re-suggest
+          return;
         }
       }
 
-      //Check for new pattern matches
       const match = this.findTriggerMatch(lineText, lineNumber);
 
       if (match) {
-        // Remove old suggestion if exists
         if (this.pendingSuggestion) {
           this.removeSuggestion(editor);
         }
 
-        // Show new suggestion
-        // match.suggestion - from the front if it matches with editor.current line
-        // Scanner s = new Scanner();
-
-        //<<<<=== Always use this for ref to understand =>>>>>>>>
-        // currentLineText> Scanner s = new
-        // res " "= new ", because its the remaining part after removing the matched part from current line text
-        // resFinal = suggestion after removing the res part from the suggestion text
         const currentLineText = lineText.trimStart();
-
-        // Get the actual matched text from the regex
         const actualMatch = match.regex.exec(currentLineText);
         const matchedText = actualMatch ? actualMatch[0] : "";
 
-        let res;
-        let resFinal;
+        let res = "";
+        let resFinal: string | string[];
 
         if (match.suggestion.length > 1) {
-          // Multiline: process first line only, keep rest as-is
           res = this.removeLeadingTokens(currentLineText, [matchedText]);
 
           const firstLine = match.suggestion[0];
           const firstLineProcessed = this.removeLeadingTokens(firstLine, [res]);
-
-          // Combine: processed first line + rest of the lines unchanged
           resFinal = [firstLineProcessed, ...match.suggestion.slice(1)];
 
-          console.log("Res = " + res + "ResFinal = " + resFinal);
+          console.log(`Res = ${res}ResFinal = ${resFinal}`);
 
           const requestId = ++this.suggestionRequestId;
           void this.showSuggestion(
@@ -523,15 +563,11 @@ class SuggestionController {
             match.key,
             requestId,
           );
-          pastLineNumber += 1;
         } else {
-          // Single line: just process the string
           res = this.removeLeadingTokens(currentLineText, [matchedText]);
-          resFinal = this.removeLeadingTokens(match.suggestion.toString(), [
-            res,
-          ]);
+          resFinal = this.removeLeadingTokens(match.suggestion.toString(), [res]);
 
-          console.log("Res = " + res + "ResFinal = " + resFinal);
+          console.log(`Res = ${res}ResFinal = ${resFinal}`);
 
           const requestId = ++this.suggestionRequestId;
           void this.showSuggestion(
@@ -543,23 +579,19 @@ class SuggestionController {
           );
         }
 
-        // Show notification
         const varInfo =
           match.type === "variableDependent"
             ? ` with variable "${match.variableName}"`
             : "";
-        vscode.window.showInformationMessage(
+        void vscode.window.showInformationMessage(
           `FaultyAI suggestion for "${match.key}"${varInfo}`,
         );
       } else if (
         this.pendingSuggestion &&
         this.pendingSuggestion.line === lineNumber
       ) {
-        // Line no longer matches, remove suggestion
         this.removeSuggestion(editor);
       }
     });
   }
 }
-
-module.exports = { SuggestionController };

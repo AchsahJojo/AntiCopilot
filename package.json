@@ -30,8 +30,10 @@
   ]
 },
   "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
     "lint": "eslint .",
-    "pretest": "npm run lint",
+    "pretest": "npm run compile && npm run lint",
     "test": "vscode-test"
   },
   "devDependencies": {
