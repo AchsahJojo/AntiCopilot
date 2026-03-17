@@ -12,6 +12,6 @@
     "sourceMap": true,
     "lib": ["ES2022"]
   },
-  "include": ["src/**/*"],
+  "include": ["extension.ts", "src/**/*"],
   "exclude": ["node_modules", "out"]
 }

@@ -13,7 +13,7 @@
   "onLanguage:java",  
   "onStartupFinished"     
   ],
-  "main": "./extension.js",
+  "main": "./out/extension.js",
 "contributes": {
   "commands": [
     {
@@ -30,6 +30,7 @@
   ]
 },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "lint": "eslint .",

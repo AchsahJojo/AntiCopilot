@@ -1,29 +1,34 @@
-const vscode = require("vscode");
-const { SuggestionController } = require("./out/src/SuggestionController");
-const {
-  AutoClosingBracketsManager,
-} = require("./src/AutoClosingBracketsManager");
+import * as vscode from "vscode";
+import { SuggestionController } from "./src/SuggestionController";
 
-let controller;
-let bracketsManager;
+interface AutoClosingBracketsManagerLike {
+  applyWorkspaceSettings(): void;
+  restoreWorkspaceSettings(): void;
+}
 
-function activate(context) {
+const { AutoClosingBracketsManager } = require("./src/AutoClosingBracketsManager") as {
+  AutoClosingBracketsManager: new () => AutoClosingBracketsManagerLike;
+};
+
+let controller: SuggestionController | undefined;
+let bracketsManager: AutoClosingBracketsManagerLike | undefined;
+
+export function activate(context: vscode.ExtensionContext): void {
   console.log("FaultyAI extension activated!");
 
   controller = new SuggestionController();
   bracketsManager = new AutoClosingBracketsManager();
 
-  // Programmatically set workspace and Java-language auto-closing brackets to "never".
-  // Do NOT push the returned Promise into context.subscriptions (it's not a Disposable).
   bracketsManager.applyWorkspaceSettings();
 
-  // Hover provider for showing full suggestion
   context.subscriptions.push(
     vscode.languages.registerHoverProvider(
       { scheme: "file", language: "java" },
       {
-        provideHover(document, position) {
-          if (!controller.pendingSuggestion) return;
+        provideHover(_document, position) {
+          if (!controller?.pendingSuggestion) {
+            return undefined;
+          }
 
           const lineNumber = position.line;
           if (lineNumber === controller.pendingSuggestion.line) {
@@ -31,49 +36,38 @@ function activate(context) {
               `**FaultyAI Suggestion** (Press Tab to accept)\n\`\`\`java\n${controller.pendingSuggestion.text}\n\`\`\``,
             );
           }
+
+          return undefined;
         },
       },
     ),
   );
 
-  // Text change listener
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) =>
-      controller.handleTextChange(event),
+      controller?.handleTextChange(event),
     ),
   );
 
-  // Editor focus change
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((newEditor) => {
       if (!newEditor) {
-        controller.removeSuggestion(vscode.window.activeTextEditor);
+        controller?.removeSuggestion(vscode.window.activeTextEditor);
       }
     }),
   );
 
-  // Accept suggestion command
   context.subscriptions.push(
     vscode.commands.registerCommand("faultyai.acceptSuggestion", () => {
       const editor = vscode.window.activeTextEditor;
       if (editor) {
-        controller.acceptSuggestion(editor);
+        void controller?.acceptSuggestion(editor);
       }
     }),
   );
 }
 
-function deactivate() {
-  if (controller) {
-    controller.removeSuggestion(vscode.window.activeTextEditor);
-  }
-
-  if (bracketsManager) {
-    bracketsManager.restoreWorkspaceSettings();
-  }
+export function deactivate(): void {
+  controller?.removeSuggestion(vscode.window.activeTextEditor);
+  bracketsManager?.restoreWorkspaceSettings();
 }
-//hello!
-module.exports = {
-  activate,
-  deactivate,
-};
