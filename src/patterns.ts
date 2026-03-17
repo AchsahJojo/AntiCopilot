@@ -1,14 +1,39 @@
-function createPatterns() {
+export type SuggestionValue = string | string[];
+
+export interface GenericPatternEntry {
+  trigger: RegExp;
+  suggestion:
+    | SuggestionValue
+    | ((args: { match: RegExpExecArray }) => SuggestionValue);
+}
+
+export interface VariableDependentPatternEntry {
+  trigger: RegExp;
+  builder: (args: {
+    variableName: string;
+    match?: RegExpExecArray;
+  }) => SuggestionValue;
+}
+
+export interface Patterns {
+  // Uses captured values (for example variable names) to build suggestion text.
+  variableDependent: VariableDependentPatternEntry[];
+  // Static regex-to-suggestion mappings.
+  generic: GenericPatternEntry[];
+}
+
+export function createPatterns(): Patterns {
+  // Central pattern registry for the suggestion engine.
   return {
     // Regex-driven so users can match richer shapes than simple keywords.
     variableDependent: [
       {
         trigger: /\bScanner\s+(\w+)\b/,
-        builder: ({}) => [` = new Scanner(System.in);`],
+        builder: () => [" = new Scanner(System.in);"],
       },
       {
         trigger: /^\s*int(?!\s*\[)\s+(\w+)\b/,
-        builder: ({}) => [`= sc.next();`],
+        builder: () => ["= sc.next();"],
       },
       // only match to sc.next() if int is the first regex that is being matched, otherwise, do not match untill another regex is fully matched for a different suggestion
     ],
@@ -80,5 +105,3 @@ function createPatterns() {
     ],
   };
 }
-
-module.exports = { createPatterns };

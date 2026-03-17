@@ -6,21 +6,17 @@ interface AutoClosingBracketsManagerLike {
   restoreWorkspaceSettings(): void;
 }
 
-const { AutoClosingBracketsManager } = require("./src/AutoClosingBracketsManager") as {
-  AutoClosingBracketsManager: new () => AutoClosingBracketsManagerLike;
-};
-
+// Created on activation and reused by event handlers until extension deactivation.
 let controller: SuggestionController | undefined;
+// Kept for compatibility with optional bracket manager integration.
 let bracketsManager: AutoClosingBracketsManagerLike | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log("FaultyAI extension activated!");
 
   controller = new SuggestionController();
-  bracketsManager = new AutoClosingBracketsManager();
 
-  bracketsManager.applyWorkspaceSettings();
-
+  // Hover shows the full suggestion body when the cursor is on the suggestion line.
   context.subscriptions.push(
     vscode.languages.registerHoverProvider(
       { scheme: "file", language: "java" },
@@ -43,12 +39,14 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
+  // Main input stream: all suggestion detection starts from text change events.
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) =>
       controller?.handleTextChange(event),
     ),
   );
 
+  // Clear stale decoration when editor focus is lost/switched.
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((newEditor) => {
       if (!newEditor) {
@@ -57,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  // Applies the currently displayed suggestion into the document.
   context.subscriptions.push(
     vscode.commands.registerCommand("faultyai.acceptSuggestion", () => {
       const editor = vscode.window.activeTextEditor;

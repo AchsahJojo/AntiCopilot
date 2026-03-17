@@ -1,21 +1,12 @@
 import * as vscode from "vscode";
+import {
+  createPatterns,
+  type GenericPatternEntry,
+  type Patterns,
+  type SuggestionValue,
+  type VariableDependentPatternEntry,
+} from "./patterns";
 
-type SuggestionValue = string | string[];
-
-interface GenericPatternEntry {
-  trigger: RegExp;
-  suggestion: SuggestionValue | ((args: { match: RegExpExecArray }) => SuggestionValue);
-}
-
-interface VariableDependentPatternEntry {
-  trigger: RegExp;
-  builder: (args: { variableName: string; match?: RegExpExecArray }) => SuggestionValue;
-}
-
-interface Patterns {
-  generic: GenericPatternEntry[];
-  variableDependent: VariableDependentPatternEntry[];
-}
 
 interface PreviewSpacer {
   anchorLine: number;
@@ -47,10 +38,7 @@ interface VariableDependentTriggerMatch {
 
 type TriggerMatch = GenericTriggerMatch | VariableDependentTriggerMatch;
 
-const { createPatterns } = require("./patterns") as {
-  createPatterns: () => Patterns;
-};
-
+// Coordinates ghost suggestion rendering, acceptance, and suppression state.
 export class SuggestionController {
   private greyDecoration: vscode.TextEditorDecorationType;
   private patterns: Patterns;
@@ -58,10 +46,14 @@ export class SuggestionController {
   private acceptedLines: Set<number>;
   private isAccepting: boolean;
   private isAdjustingPreviewSpace: boolean;
+  // Monotonic id to ignore stale async render requests.
   private suggestionRequestId: number;
+  // Per-line suppression so a deleted suggestion does not immediately reappear.
   private superpressedPatterns: Map<number, Set<string>>;
+  // Tracks temporary lines inserted to preview multiline suggestions.
   private previewSpacer: PreviewSpacer | null;
 
+  // Initializes decoration style and all controller state caches.
   constructor() {
     this.greyDecoration = vscode.window.createTextEditorDecorationType({
       after: {
@@ -81,11 +73,13 @@ export class SuggestionController {
     this.previewSpacer = null;
   }
 
+  // Normalizes any suggestion payload into a safe array of strings.
   private normalizeSuggestionLines(suggestion: SuggestionValue): string[] {
     const lines = Array.isArray(suggestion) ? suggestion : [suggestion];
     return lines.map((line) => String(line ?? ""));
   }
 
+  // Removes the longest matching already-typed token prefix from `text`.
   private removeLeadingTokens(text: string, tokens: string[]): string {
     const sorted = [...tokens].sort((a, b) => b.length - a.length);
     for (const token of sorted) {
@@ -97,12 +91,14 @@ export class SuggestionController {
     return text;
   }
 
+  // Resolves one indentation step based on editor tab/space settings.
   private getIndentUnit(editor: vscode.TextEditor): string {
     const insertSpaces = editor.options.insertSpaces !== false;
     const tabSize = Number(editor.options.tabSize) || 2;
     return insertSpaces ? " ".repeat(tabSize) : "\t";
   }
 
+  // Builds preview lines with indentation that follows Java block structure.
   private buildIndentedSuggestionLines(
     editor: vscode.TextEditor,
     lineNumber: number,
@@ -121,6 +117,7 @@ export class SuggestionController {
       const rawLine = String(lines[i] ?? "");
 
       if (i === 0) {
+        // First line stays relative to the user's cursor line.
         result.push(rawLine);
         if (/\{\s*$/.test(rawLine.trim())) {
           blockDepth = 1;
@@ -134,6 +131,7 @@ export class SuggestionController {
         continue;
       }
 
+      // Dedent closing tokens first so `}` aligns correctly in the preview.
       if (/^[}\])]/.test(trimmedLine)) {
         blockDepth = Math.max(0, blockDepth - 1);
       }
@@ -148,6 +146,7 @@ export class SuggestionController {
     return result;
   }
 
+  // Converts leading whitespace to visible decoration-safe characters.
   private renderDecorationWhitespace(editor: vscode.TextEditor, line: string): string {
     const tabSize = Number(editor.options.tabSize) || 2;
     return line.replace(/^[ \t]+/, (leading) =>
@@ -155,6 +154,7 @@ export class SuggestionController {
     );
   }
 
+  // Counts consecutive blank lines under a line to decide preview layout strategy.
   private countAvailableEmptyLines(doc: vscode.TextDocument, lineNumber: number): number {
     let availableLines = 0;
     for (let i = lineNumber + 1; i < doc.lineCount; i += 1) {
@@ -169,6 +169,7 @@ export class SuggestionController {
     return availableLines;
   }
 
+  // Deletes temporary spacer lines previously inserted for multiline preview.
   private async clearPreviewSpace(editor: vscode.TextEditor | undefined): Promise<void> {
     if (!editor || !this.previewSpacer) {
       return;
@@ -194,6 +195,7 @@ export class SuggestionController {
 
     this.isAdjustingPreviewSpace = true;
     try {
+      // Remove only the range that was injected for preview spacing.
       await editor.edit((editBuilder) => {
         editBuilder.delete(deleteRange);
       });
@@ -205,6 +207,7 @@ export class SuggestionController {
     }
   }
 
+  // Ensures enough empty lines exist below cursor to render multiline ghost text.
   private async ensurePreviewSpace(
     editor: vscode.TextEditor | undefined,
     lineNumber: number,
@@ -235,6 +238,7 @@ export class SuggestionController {
 
     this.isAdjustingPreviewSpace = true;
     try {
+      // Insert empty lines under the anchor to render multiline ghost text cleanly.
       await editor.edit((editBuilder) => {
         editBuilder.insert(insertPosition, spacerText);
       });
@@ -251,7 +255,9 @@ export class SuggestionController {
     }
   }
 
+  // Finds the first matching pattern (respecting suppression state for a line).
   private findTriggerMatch(lineText: string, lineNumber?: number): TriggerMatch | null {
+    // Generic patterns are evaluated first.
     for (const entry of this.patterns.generic) {
       const match = entry.trigger.exec(lineText);
       if (!match) {
@@ -306,6 +312,7 @@ export class SuggestionController {
     return null;
   }
 
+  // Renders ghost text decorations and records the pending suggestion metadata.
   private async showSuggestion(
     editor: vscode.TextEditor,
     lineNumber: number,
@@ -326,6 +333,7 @@ export class SuggestionController {
       await this.ensurePreviewSpace(editor, lineNumber, lines.length - 1);
     }
 
+    // If another keystroke happened, drop this outdated render.
     if (requestId !== null && requestId !== this.suggestionRequestId) {
       return;
     }
@@ -383,7 +391,9 @@ export class SuggestionController {
     };
   }
 
+  // Clears current suggestion state and decorations from the active editor.
   public removeSuggestion(editor: vscode.TextEditor | undefined): void {
+    // Invalidate pending async renders and clear any temporary preview spacing.
     this.suggestionRequestId += 1;
     if (editor) {
       editor.setDecorations(this.greyDecoration, []);
@@ -393,6 +403,7 @@ export class SuggestionController {
     this.pendingSuggestion = null;
   }
 
+  // Commits the currently pending suggestion into the document as real text.
   public async acceptSuggestion(editor: vscode.TextEditor): Promise<void> {
     if (!this.pendingSuggestion || this.isAccepting) {
       return;
@@ -442,6 +453,7 @@ export class SuggestionController {
       editor.selection = new vscode.Selection(endPosition, endPosition);
 
       if (lines.length > 1) {
+        // Format after the edit settles so the inserted block is consistently shaped.
         setTimeout(async () => {
           try {
             const startPos = new vscode.Position(lineNumber, 0);
@@ -472,6 +484,7 @@ export class SuggestionController {
     }
   }
 
+  // Utility matcher used by logic that checks if an accepted line still matches any pattern.
   private findPattern(lineText: string): GenericPatternEntry | VariableDependentPatternEntry | null {
     for (const category of Object.values(this.patterns)) {
       for (const entry of category) {
@@ -485,6 +498,7 @@ export class SuggestionController {
     return null;
   }
 
+  // Main event pipeline: classify edit, update suppression/acceptance state, and render preview.
   public handleTextChange(event: vscode.TextDocumentChangeEvent): void {
     const editor = vscode.window.activeTextEditor;
     if (!editor || this.isAccepting || this.isAdjustingPreviewSpace) {
@@ -499,6 +513,7 @@ export class SuggestionController {
       const lineText = line.text;
 
       if (change.text === "" && change.rangeLength > 0) {
+        // If user deletes a live suggestion, suppress that pattern for this line.
         if (
           this.pendingSuggestion &&
           this.pendingSuggestion.line === lineNumber
@@ -524,6 +539,7 @@ export class SuggestionController {
       }
 
       if (this.acceptedLines.has(lineNumber)) {
+        // Do not re-suggest while the accepted line still matches.
         const match = this.findTriggerMatch(lineText, lineNumber);
         if (!match) {
           this.acceptedLines.delete(lineNumber);
@@ -539,6 +555,7 @@ export class SuggestionController {
           this.removeSuggestion(editor);
         }
 
+        // Remove already-typed prefix from suggestion so preview shows only the remainder.
         const currentLineText = lineText.trimStart();
         const actualMatch = match.regex.exec(currentLineText);
         const matchedText = actualMatch ? actualMatch[0] : "";
