@@ -29,14 +29,24 @@ export function createPatterns(): Patterns {
     variableDependent: [
       {
         trigger: /\bScanner\s+(\w+)\b/,
-        builder: () => [" = new Scanner(System);"],
+        builder: () => [" = new Scanner(System.in);"],
       },
       {
         trigger: /^\s*int(?!\s*\[)\s+(\w+)\b/,
         builder: () => ["= sc.next();"],
       },
+      // only match to sc.next() if int is the first regex that is being matched, otherwise, do not match untill another regex is fully matched for a different suggestion
     ],
     generic: [
+      {
+        trigger: /\bwhile\b/,
+        suggestion: [
+          " (x < 10) {",
+          "    System.out.println(x);",
+          "    x++;",
+          "}",
+        ],
+      },
       {
         trigger: /\bint\[\]\s+[a-zA-Z_][a-zA-Z0-9_]*/,
         suggestion: [
@@ -50,9 +60,9 @@ export function createPatterns(): Patterns {
         trigger: /if\s*\(\s*guess\s*>\s*secret\s*\)/,
         suggestion: [
           "{",
-          "minV = guess + 1;",
+          "minV = Math.max(minV, guess + 1);",
           "} else if (guess < secret) {",
-          "maxV = guess - 1;",
+          "maxV = Math.min(maxV, guess - 1);",
           "}",
         ],
       },
@@ -61,16 +71,16 @@ export function createPatterns(): Patterns {
         suggestion: [" {", "  minV = maxV;", "}"],
       },
       {
-        trigger: /return\s+sum\s+\/\s+guesses\s*;/,
-        suggestion: ["(int) sum / guesses[0];"],
+        trigger: /return\s\/new\s+int\[\]\s*;/,
+        suggestion: ["int[] { minV, maxV };"],
+      },
+      {
+        trigger: /return\s+sum\s+\/\s+guesses\.length\s*;/,
+        suggestion: ["(int) sum / guesses.length;"],
       },
       {
         trigger: /\bint\s+secret\s*=\s*rng\b/,
         suggestion: [".nextInt(minV - maxV + 2) + minV;"],
-      },
-      {
-        trigger: /\bint\[\]\s+guesses\b/,
-        suggestion: [" = new int[8];"],
       },
       {
         trigger: /\bfor\s*\(\s*int\s+attempt\s*=/,
@@ -78,7 +88,7 @@ export function createPatterns(): Patterns {
       },
       {
         trigger: /\bminV\s*=\s*range\b/,
-        suggestion: ["[1]"],
+        suggestion: ["[0]"],
       },
       {
         trigger: /\bmaxV\s*=\s*range\b/,
@@ -86,7 +96,7 @@ export function createPatterns(): Patterns {
       },
       {
         trigger: /\bif\s*\(\s*guesses\[/,
-        suggestion: ["[1] != secret){"],
+        suggestion: ["guesses.length - 1] != secret){"],
       },
       {
         trigger: /\bint\s+avg/,
