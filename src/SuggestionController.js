@@ -416,17 +416,184 @@ class SuggestionController {
     return null;
   }
 
+  isInsideBlockCommentAtLineStart(document, targetLineNumber) {
+    let inBlockComment = false;
+    let inDoubleQuote = false;
+    let inSingleQuote = false;
+    let isEscaped = false;
+
+    for (let lineNumber = 0; lineNumber < targetLineNumber; lineNumber++) {
+      const text = document.lineAt(lineNumber).text;
+
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        const next = i + 1 < text.length ? text[i + 1] : "";
+
+        if (inBlockComment) {
+          if (ch === "*" && next === "/") {
+            inBlockComment = false;
+            i++;
+          }
+          continue;
+        }
+
+        if (inDoubleQuote) {
+          if (isEscaped) {
+            isEscaped = false;
+            continue;
+          }
+          if (ch === "\\") {
+            isEscaped = true;
+            continue;
+          }
+          if (ch === '"') {
+            inDoubleQuote = false;
+          }
+          continue;
+        }
+
+        if (inSingleQuote) {
+          if (isEscaped) {
+            isEscaped = false;
+            continue;
+          }
+          if (ch === "\\") {
+            isEscaped = true;
+            continue;
+          }
+          if (ch === "'") {
+            inSingleQuote = false;
+          }
+          continue;
+        }
+
+        if (ch === "/" && next === "*") {
+          inBlockComment = true;
+          i++;
+          continue;
+        }
+
+        if (ch === "/" && next === "/") {
+          break;
+        }
+
+        if (ch === '"') {
+          inDoubleQuote = true;
+          isEscaped = false;
+          continue;
+        }
+
+        if (ch === "'") {
+          inSingleQuote = true;
+          isEscaped = false;
+        }
+      }
+    }
+
+    return inBlockComment;
+  }
+
+  stripCommentsFromLine(lineText, startsInsideBlockComment) {
+    let inBlockComment = startsInsideBlockComment;
+    let inDoubleQuote = false;
+    let inSingleQuote = false;
+    let isEscaped = false;
+    let code = "";
+
+    for (let i = 0; i < lineText.length; i++) {
+      const ch = lineText[i];
+      const next = i + 1 < lineText.length ? lineText[i + 1] : "";
+
+      if (inBlockComment) {
+        if (ch === "*" && next === "/") {
+          inBlockComment = false;
+          i++;
+        }
+        continue;
+      }
+
+      if (inDoubleQuote) {
+        code += ch;
+        if (isEscaped) {
+          isEscaped = false;
+          continue;
+        }
+        if (ch === "\\") {
+          isEscaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inDoubleQuote = false;
+        }
+        continue;
+      }
+
+      if (inSingleQuote) {
+        code += ch;
+        if (isEscaped) {
+          isEscaped = false;
+          continue;
+        }
+        if (ch === "\\") {
+          isEscaped = true;
+          continue;
+        }
+        if (ch === "'") {
+          inSingleQuote = false;
+        }
+        continue;
+      }
+
+      if (ch === "/" && next === "/") {
+        break;
+      }
+
+      if (ch === "/" && next === "*") {
+        inBlockComment = true;
+        i++;
+        continue;
+      }
+
+      if (ch === '"') {
+        inDoubleQuote = true;
+        isEscaped = false;
+        code += ch;
+        continue;
+      }
+
+      if (ch === "'") {
+        inSingleQuote = true;
+        isEscaped = false;
+        code += ch;
+        continue;
+      }
+
+      code += ch;
+    }
+
+    return code;
+  }
+
+  getCodeOnlyLineText(document, lineNumber) {
+    const lineText = document.lineAt(lineNumber).text;
+    const startsInsideBlockComment = this.isInsideBlockCommentAtLineStart(
+      document,
+      lineNumber,
+    );
+    return this.stripCommentsFromLine(lineText, startsInsideBlockComment);
+  }
+
   handleTextChange(event) {
     const editor = vscode.window.activeTextEditor;
     if (!editor || this.isAccepting || this.isAdjustingPreviewSpace) return;
 
     const document = editor.document;
-    let pastLineNumber = 0;
 
     event.contentChanges.forEach((change) => {
       const lineNumber = change.range.start.line;
       const line = document.lineAt(lineNumber);
       const lineText = line.text;
+      const codeOnlyLineText = this.getCodeOnlyLineText(document, lineNumber);
 
       // Handle deletion
       /*
@@ -469,7 +636,7 @@ class SuggestionController {
 
       // If line was previously accepted, check if it still matches
       if (this.acceptedLines.has(lineNumber)) {
-        const match = this.findTriggerMatch(lineText, lineNumber);
+        const match = this.findTriggerMatch(codeOnlyLineText, lineNumber);
         if (!match) {
           this.acceptedLines.delete(lineNumber);
         } else {
@@ -478,7 +645,7 @@ class SuggestionController {
       }
 
       //Check for new pattern matches
-      const match = this.findTriggerMatch(lineText, lineNumber);
+      const match = this.findTriggerMatch(codeOnlyLineText, lineNumber);
 
       if (match) {
         // Remove old suggestion if exists
@@ -494,7 +661,7 @@ class SuggestionController {
         // currentLineText> Scanner s = new
         // res " "= new ", because its the remaining part after removing the matched part from current line text
         // resFinal = suggestion after removing the res part from the suggestion text
-        const currentLineText = lineText.trimStart();
+        const currentLineText = codeOnlyLineText.trimStart();
 
         // Get the actual matched text from the regex
         const actualMatch = match.regex.exec(currentLineText);
@@ -523,7 +690,6 @@ class SuggestionController {
             match.key,
             requestId,
           );
-          pastLineNumber += 1;
         } else {
           // Single line: just process the string
           res = this.removeLeadingTokens(currentLineText, [matchedText]);

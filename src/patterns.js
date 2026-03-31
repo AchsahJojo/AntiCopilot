@@ -1,14 +1,40 @@
+/**
+ * @typedef {string | string[]} SuggestionValue
+ */
+
+/**
+ * @typedef {object} GenericPatternEntry
+ * @property {RegExp} trigger
+ * @property {SuggestionValue | ((args: { match: RegExpExecArray }) => SuggestionValue)} suggestion
+ */
+
+/**
+ * @typedef {object} VariableDependentPatternEntry
+ * @property {RegExp} trigger
+ * @property {(args: { variableName: string, match?: RegExpExecArray }) => SuggestionValue} builder
+ */
+
+/**
+ * @typedef {object} Patterns
+ * @property {VariableDependentPatternEntry[]} variableDependent
+ * @property {GenericPatternEntry[]} generic
+ */
+
+/**
+ * @returns {Patterns}
+ */
 function createPatterns() {
+  // Central pattern registry for the suggestion engine.
   return {
     // Regex-driven so users can match richer shapes than simple keywords.
     variableDependent: [
       {
         trigger: /\bScanner\s+(\w+)\b/,
-        builder: ({}) => [` = new Scanner(System.in);`],
+        builder: () => [" = new Scanner(System.in);"],
       },
       {
         trigger: /^\s*int(?!\s*\[)\s+(\w+)\b/,
-        builder: ({}) => [`= sc.next();`],
+        builder: () => ["= sc.next();"],
       },
       // only match to sc.next() if int is the first regex that is being matched, otherwise, do not match untill another regex is fully matched for a different suggestion
     ],
