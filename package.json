@@ -25,7 +25,7 @@
     {
       "command": "faultyai.acceptSuggestion",
       "key": "tab",
-      "when": "editorTextFocus"
+      "when": "editorTextFocus && faultyai.hasSuggestion"
     }
   ]
 },
