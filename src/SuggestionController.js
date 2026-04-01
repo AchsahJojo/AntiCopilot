@@ -583,6 +583,12 @@ class SuggestionController {
     return this.stripCommentsFromLine(lineText, startsInsideBlockComment);
   }
 
+  isCodeTypingChange(change) {
+    if (!change || typeof change.text !== "string") return false;
+    if (change.text.length === 0) return false;
+    return /\S/.test(change.text);
+  }
+
   handleTextChange(event) {
     const editor = vscode.window.activeTextEditor;
     if (!editor || this.isAccepting || this.isAdjustingPreviewSpace) return;
@@ -630,6 +636,19 @@ class SuggestionController {
 
         if (lineText.trim() === "") {
           this.acceptedLines.delete(lineNumber);
+        }
+        return;
+      }
+
+      // Only suggest while typing non-whitespace code.
+      // Enter/newline/indentation edits are navigation/format actions and
+      // should not trigger FaultyAI suggestions.
+      if (!this.isCodeTypingChange(change)) {
+        if (
+          this.pendingSuggestion &&
+          this.pendingSuggestion.line === lineNumber
+        ) {
+          this.removeSuggestion(editor);
         }
         return;
       }
