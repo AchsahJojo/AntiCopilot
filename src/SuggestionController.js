@@ -19,6 +19,25 @@ class SuggestionController {
     this.suggestionRequestId = 0;
     this.superpressedPatterns = new Map(); // Map: lineNumber -> Set of pattern keys
     this.previewSpacer = null; // { anchorLine: number, count: number }
+    this.setSuggestionContext(false);
+  }
+
+  setSuggestionContext(hasSuggestion) {
+    void vscode.commands.executeCommand(
+      "setContext",
+      "faultyai.hasSuggestion",
+      Boolean(hasSuggestion),
+    );
+  }
+
+  syncSuggestionContextForEditor(editor) {
+    if (!editor || !this.pendingSuggestion) {
+      this.setSuggestionContext(false);
+      return;
+    }
+
+    const activeLine = editor.selection?.active.line;
+    this.setSuggestionContext(activeLine === this.pendingSuggestion.line);
   }
 
   removeLeadingTokens(text, tokens) {
@@ -305,6 +324,7 @@ class SuggestionController {
       displayMode: useSingleLine ? "single" : "multi",
       patternKey,
     };
+    this.setSuggestionContext(true);
   }
 
   removeSuggestion(editor) {
@@ -314,10 +334,15 @@ class SuggestionController {
       void this.clearPreviewSpace(editor);
     }
     this.pendingSuggestion = null;
+    this.setSuggestionContext(false);
   }
 
   async acceptSuggestion(editor) {
     if (!this.pendingSuggestion || this.isAccepting) return;
+    if (editor.selection?.active.line !== this.pendingSuggestion.line) {
+      this.setSuggestionContext(false);
+      return;
+    }
 
     this.isAccepting = true;
     const { line: lineNumber, lines } = this.pendingSuggestion;

@@ -48,7 +48,16 @@ function activate(context) {
     vscode.window.onDidChangeActiveTextEditor((newEditor) => {
       if (!newEditor) {
         controller.removeSuggestion(vscode.window.activeTextEditor);
+        return;
       }
+      controller.syncSuggestionContextForEditor(newEditor);
+    }),
+  );
+
+  // Keep Tab-accept enabled only when caret is on the suggestion line.
+  context.subscriptions.push(
+    vscode.window.onDidChangeTextEditorSelection((event) => {
+      controller.syncSuggestionContextForEditor(event.textEditor);
     }),
   );
 
