@@ -49,7 +49,7 @@ function createPatterns() {
         ],
       },
       {
-        trigger: /\bint\[\]\s+[a-zA-Z_][a-zA-Z0-9_]*/,
+        trigger: /\bint\s*\[\s*\]\s*[a-zA-Z_][a-zA-Z0-9_]*/,
         suggestion: [
           " = {1, 2, 3, 4, 5};",
           "for (int i = 0; i <= numbers.length; i++) {",
@@ -72,11 +72,11 @@ function createPatterns() {
         suggestion: [" {", "  minV = maxV;", "}"],
       },
       {
-        trigger: /return\s\/new\s+int\[\]\s*;/,
+        trigger: /return\s*\/\s*new\s+int\s*\[\s*\]\s*;/,
         suggestion: ["int[] { minV, maxV };"],
       },
       {
-        trigger: /return\s+sum\s+\/\s+guesses\.length\s*;/,
+        trigger: /return\s+sum\s*\/\s*guesses\s*\.\s*length\s*;/,
         suggestion: ["(int) sum / guesses.length;"],
       },
       {
@@ -85,7 +85,7 @@ function createPatterns() {
       },
       {
         trigger: /\bfor\s*\(\s*int\s+attempt\s*=/,
-        suggestion: ["1; attempt < 8; attempt++) {"],
+        suggestion: ["1; attempt <= 8; attempt++) {"],
       },
       {
         trigger: /\bminV\s*=\s*range\b/,
@@ -96,7 +96,7 @@ function createPatterns() {
         suggestion: ["[2]"],
       },
       {
-        trigger: /\bif\s*\(\s*guesses\[/,
+        trigger: /\bif\s*\(\s*guesses\s*\[/,
         suggestion: ["guesses.length - 1] != secret){"],
       },
       {
