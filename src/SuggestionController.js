@@ -22,6 +22,13 @@ class SuggestionController {
     this.setSuggestionContext(false);
   }
 
+  reloadPatterns() {
+    this.patterns = createPatterns();
+    this.acceptedLines.clear();
+    this.superpressedPatterns.clear();
+    this.removeSuggestion(vscode.window.activeTextEditor);
+  }
+
   setSuggestionContext(hasSuggestion) {
     void vscode.commands.executeCommand(
       "setContext",
@@ -231,7 +238,7 @@ class SuggestionController {
           key: patternKey,
           regex: entry.trigger,
           variableName,
-          suggestion: entry.builder({ variableName }),
+          suggestion: entry.builder({ variableName, match }),
         };
       }
     }

@@ -1,3 +1,4 @@
 {
-    "editor.autoClosingBrackets": "never"
+    "editor.autoClosingBrackets": "never",
+    "faultyai.patternsFile": "/Users/achsahjojo/Desktop/patterns.txt"
 }
