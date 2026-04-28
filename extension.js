@@ -1,17 +1,54 @@
 const vscode = require("vscode");
+const path = require("path");
 const { SuggestionController } = require("./src/SuggestionController");
+const { getPatternsFilePath } = require("./src/patterns");
 const {
   AutoClosingBracketsManager,
 } = require("./src/AutoClosingBracketsManager");
 
 let controller;
 let bracketsManager;
+let patternWatchDisposables = [];
+
+function disposePatternWatcher() {
+  for (const disposable of patternWatchDisposables) {
+    disposable.dispose();
+  }
+  patternWatchDisposables = [];
+}
+
+function watchPatternsFile(context) {
+  disposePatternWatcher();
+
+  const patternsFilePath = getPatternsFilePath();
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(
+      path.dirname(patternsFilePath),
+      path.basename(patternsFilePath),
+    ),
+  );
+
+  const reloadPatterns = () => {
+    if (!controller) return;
+    controller.reloadPatterns();
+    console.log(`FaultyAI patterns reloaded from ${patternsFilePath}`);
+  };
+
+  patternWatchDisposables = [
+    watcher,
+    watcher.onDidChange(reloadPatterns),
+    watcher.onDidCreate(reloadPatterns),
+    watcher.onDidDelete(reloadPatterns),
+  ];
+  context.subscriptions.push(...patternWatchDisposables);
+}
 
 function activate(context) {
   console.log("FaultyAI extension activated!");
 
   controller = new SuggestionController();
   bracketsManager = new AutoClosingBracketsManager();
+  watchPatternsFile(context);
 
   // Programmatically set workspace and Java-language auto-closing brackets to "never".
   // Do NOT push the returned Promise into context.subscriptions (it's not a Disposable).
@@ -61,6 +98,15 @@ function activate(context) {
     }),
   );
 
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("faultyai.patternsFile")) return;
+
+      controller.reloadPatterns();
+      watchPatternsFile(context);
+    }),
+  );
+
   // Accept suggestion command
   context.subscriptions.push(
     vscode.commands.registerCommand("faultyai.acceptSuggestion", () => {
@@ -73,6 +119,8 @@ function activate(context) {
 }
 
 function deactivate() {
+  disposePatternWatcher();
+
   if (controller) {
     controller.removeSuggestion(vscode.window.activeTextEditor);
   }

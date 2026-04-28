@@ -17,3 +17,18 @@ _AntiCopilot_ is a Visual Studio Code extension designed to emulate GitHub Copil
 2. Create a Java file.
 3. Check if the extension is running by opening the Command Palette and selecting "Developer: Show Running Extensions". Look for `undefined_publisher.faultyai`.
 4. Once activated, start typing `Scanner s`, `while`, or `for` to see the autocompletion suggestions.
+
+## Pattern File
+
+FaultyAI loads suggestion patterns from `src/patterns.txt` by default. To use a different file, set `faultyai.patternsFile` in VS Code settings to an absolute path like `/Users/achsahjojo/Desktop/patterns.txt`, or to a path relative to the workspace.
+
+Pattern blocks use this format:
+
+```text
+TRIGGER: \bScanner\s+(\w+)\b
+TYPE: variableDependent
+SUGGESTION:  = new Scanner(System.in);
+---
+```
+
+Use `TYPE: generic` for fixed suggestions and `TYPE: variableDependent` when the trigger captures a variable name. Variable-dependent suggestions can include `{{variableName}}` or capture groups like `{{1}}`.

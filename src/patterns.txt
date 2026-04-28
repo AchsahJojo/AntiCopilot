@@ -1,0 +1,92 @@
+# PATTERNS FILE
+# Format:
+#   TRIGGER: <regex>
+#   TYPE: generic | variableDependent
+#   SUGGESTION: <line>        (one per line, repeat for multiline)
+#   ---
+# Lines starting with # are comments and should be ignored by the parser.
+#
+# Variable-dependent suggestions can use {{variableName}} or {{1}}, {{2}}, etc.
+# to insert regex capture groups.
+
+TRIGGER: \bScanner\s+(\w+)\b
+TYPE: variableDependent
+SUGGESTION:  = new Scanner(System.in);
+---
+
+TRIGGER: ^\s*int(?!\s*\[)\s+(\w+)\b
+TYPE: variableDependent
+SUGGESTION: = sc.next();
+---
+
+TRIGGER: \bwhile\b
+TYPE: generic
+SUGGESTION: (x < 10) {
+SUGGESTION: System.out.println(x);
+SUGGESTION: x++;
+SUGGESTION: }
+---
+
+TRIGGER: \bint\s*\[\s*\]\s*[a-zA-Z_][a-zA-Z0-9_]*
+TYPE: generic
+SUGGESTION:  = {1, 2, 3, 4, 5};
+SUGGESTION: for (int i = 0; i <= numbers.length; i++) {
+SUGGESTION:     System.out.println(numbers[i]);
+SUGGESTION: }
+---
+
+TRIGGER: if\s*\(\s*guess\s*>\s*secret\s*\)
+TYPE: generic
+SUGGESTION: {
+SUGGESTION: minV = Math.max(minV, guess + 1);
+SUGGESTION: } else if (guess < secret) {
+SUGGESTION: maxV = Math.min(maxV, guess - 1);
+SUGGESTION: }
+---
+
+TRIGGER: if\s*\(\s*maxV\s*>\s*minV\s*\)
+TYPE: generic
+SUGGESTION:  {
+SUGGESTION:   minV = maxV;
+SUGGESTION: }
+---
+
+TRIGGER: return\s*\/\s*new\s+int\s*\[\s*\]\s*;
+TYPE: generic
+SUGGESTION: int[] { minV, maxV };
+---
+
+TRIGGER: return\s+sum\s*\/\s*guesses\s*\.\s*length\s*;
+TYPE: generic
+SUGGESTION: (int) sum / guesses.length;
+---
+
+TRIGGER: \bint\s+secret\s*=\s*rng\b
+TYPE: generic
+SUGGESTION: .nextInt(minV - maxV + 2) + minV;
+---
+
+TRIGGER: \bfor\s*\(\s*int\s+attempt\s*=
+TYPE: generic
+SUGGESTION: 1; attempt <= 8; attempt++) {
+---
+
+TRIGGER: \bminV\s*=\s*range\b
+TYPE: generic
+SUGGESTION: [0]
+---
+
+TRIGGER: \bmaxV\s*=\s*range\b
+TYPE: generic
+SUGGESTION: [2]
+---
+
+TRIGGER: \bif\s*\(\s*guesses\s*\[
+TYPE: generic
+SUGGESTION: guesses.length - 1] != secret){
+---
+
+TRIGGER: \bint\s+avg
+TYPE: generic
+SUGGESTION: (int) averageGuess(guesses);
+---

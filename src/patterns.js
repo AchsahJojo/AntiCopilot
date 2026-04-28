@@ -1,3 +1,9 @@
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+const DEFAULT_PATTERNS_FILE = path.join(__dirname, "patterns.txt");
+
 /**
  * @typedef {string | string[]} SuggestionValue
  */
@@ -20,91 +26,227 @@
  * @property {GenericPatternEntry[]} generic
  */
 
-/**
- * @returns {Patterns}
- */
-function createPatterns() {
-  // Central pattern registry for the suggestion engine.
+function getVscode() {
+  try {
+    return require("vscode");
+  } catch {
+    return null;
+  }
+}
+
+function expandHome(filePath) {
+  if (filePath === "~") return os.homedir();
+  if (filePath.startsWith("~/")) {
+    return path.join(os.homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
+
+function getWorkspaceRoot() {
+  const vscode = getVscode();
+  const workspaceFolder = vscode?.workspace?.workspaceFolders?.[0];
+  return workspaceFolder?.uri?.fsPath ?? null;
+}
+
+function getConfiguredPatternsPath() {
+  const vscode = getVscode();
+  return vscode?.workspace
+    ?.getConfiguration("faultyai")
+    ?.get("patternsFile", "");
+}
+
+function getPatternsFilePath(patternsFilePath = getConfiguredPatternsPath()) {
+  const configuredPath =
+    typeof patternsFilePath === "string" ? patternsFilePath.trim() : "";
+
+  if (!configuredPath) {
+    return DEFAULT_PATTERNS_FILE;
+  }
+
+  const expandedPath = expandHome(configuredPath);
+  if (path.isAbsolute(expandedPath)) {
+    return expandedPath;
+  }
+
+  return path.resolve(getWorkspaceRoot() ?? process.cwd(), expandedPath);
+}
+
+function createEmptyPatterns() {
   return {
-    // Regex-driven so users can match richer shapes than simple keywords.
-    variableDependent: [
-      {
-        trigger: /\bScanner\s+(\w+)\b/,
-        builder: () => [" = new Scanner(System.in);"],
-      },
-      {
-        trigger: /^\s*int(?!\s*\[)\s+(\w+)\b/,
-        builder: () => ["= sc.next();"],
-      },
-      // only match to sc.next() if int is the first regex that is being matched, otherwise, do not match untill another regex is fully matched for a different suggestion
-    ],
-    generic: [
-      {
-        trigger: /\bwhile\b/,
-        suggestion: [
-          " (x < 10) {",
-          "    System.out.println(x);",
-          "    x++;",
-          "}",
-        ],
-      },
-      {
-        trigger: /\bint\s*\[\s*\]\s*[a-zA-Z_][a-zA-Z0-9_]*/,
-        suggestion: [
-          " = {1, 2, 3, 4, 5};",
-          "for (int i = 0; i <= numbers.length; i++) {",
-          "    System.out.println(numbers[i]);",
-          "}",
-        ],
-      },
-      {
-        trigger: /if\s*\(\s*guess\s*>\s*secret\s*\)/,
-        suggestion: [
-          "{",
-          "minV = Math.max(minV, guess + 1);",
-          "} else if (guess < secret) {",
-          "maxV = Math.min(maxV, guess - 1);",
-          "}",
-        ],
-      },
-      {
-        trigger: /if\s*\(\s*maxV\s*>\s*minV\s*\)/,
-        suggestion: [" {", "  minV = maxV;", "}"],
-      },
-      {
-        trigger: /return\s*\/\s*new\s+int\s*\[\s*\]\s*;/,
-        suggestion: ["int[] { minV, maxV };"],
-      },
-      {
-        trigger: /return\s+sum\s*\/\s*guesses\s*\.\s*length\s*;/,
-        suggestion: ["(int) sum / guesses.length;"],
-      },
-      {
-        trigger: /\bint\s+secret\s*=\s*rng\b/,
-        suggestion: [".nextInt(minV - maxV + 2) + minV;"],
-      },
-      {
-        trigger: /\bfor\s*\(\s*int\s+attempt\s*=/,
-        suggestion: ["1; attempt <= 8; attempt++) {"],
-      },
-      {
-        trigger: /\bminV\s*=\s*range\b/,
-        suggestion: ["[0]"],
-      },
-      {
-        trigger: /\bmaxV\s*=\s*range\b/,
-        suggestion: ["[2]"],
-      },
-      {
-        trigger: /\bif\s*\(\s*guesses\s*\[/,
-        suggestion: ["guesses.length - 1] != secret){"],
-      },
-      {
-        trigger: /\bint\s+avg/,
-        suggestion: ["(int) averageGuess(guesses);"],
-      },
-    ],
+    variableDependent: [],
+    generic: [],
   };
 }
 
-module.exports = { createPatterns };
+function readDirectiveValue(line, directive) {
+  const prefix = `${directive}:`;
+  if (!line.startsWith(prefix)) return null;
+
+  const value = line.slice(prefix.length);
+  if (value.startsWith(" ") || value.startsWith("\t")) {
+    return value.slice(1);
+  }
+  return value;
+}
+
+function interpolateSuggestionLine(line, variableName, match) {
+  return line
+    .replace(/\{\{variableName\}\}/g, variableName ?? "")
+    .replace(/\{\{(\d+)\}\}/g, (_, groupIndex) => {
+      return match?.[Number(groupIndex)] ?? "";
+    });
+}
+
+function warnPattern(sourceLabel, lineNumber, message) {
+  const location = lineNumber ? `${sourceLabel}:${lineNumber}` : sourceLabel;
+  console.warn(`[FaultyAI] ${location}: ${message}`);
+}
+
+function parsePatternsText(text, sourceLabel = "patterns.txt") {
+  const patterns = createEmptyPatterns();
+  let current = {
+    trigger: "",
+    type: "",
+    suggestions: [],
+    lineNumber: null,
+  };
+
+  function resetCurrent() {
+    current = {
+      trigger: "",
+      type: "",
+      suggestions: [],
+      lineNumber: null,
+    };
+  }
+
+  function flushCurrent() {
+    const hasBlock =
+      current.trigger || current.type || current.suggestions.length > 0;
+    if (!hasBlock) return;
+
+    const missing = [];
+    if (!current.trigger) missing.push("TRIGGER");
+    if (!current.type) missing.push("TYPE");
+    if (current.suggestions.length === 0) missing.push("SUGGESTION");
+
+    if (missing.length > 0) {
+      warnPattern(
+        sourceLabel,
+        current.lineNumber,
+        `skipping pattern block missing ${missing.join(", ")}`,
+      );
+      resetCurrent();
+      return;
+    }
+
+    let trigger;
+    try {
+      trigger = new RegExp(current.trigger);
+    } catch (error) {
+      warnPattern(
+        sourceLabel,
+        current.lineNumber,
+        `skipping invalid regex "${current.trigger}": ${error.message}`,
+      );
+      resetCurrent();
+      return;
+    }
+
+    const suggestions = [...current.suggestions];
+    if (current.type === "generic") {
+      patterns.generic.push({
+        trigger,
+        suggestion: suggestions,
+      });
+    } else if (current.type === "variableDependent") {
+      patterns.variableDependent.push({
+        trigger,
+        builder: ({ variableName, match }) =>
+          suggestions.map((line) =>
+            interpolateSuggestionLine(line, variableName, match),
+          ),
+      });
+    } else {
+      warnPattern(
+        sourceLabel,
+        current.lineNumber,
+        `skipping unknown TYPE "${current.type}"`,
+      );
+    }
+
+    resetCurrent();
+  }
+
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index++) {
+    const lineNumber = index + 1;
+    const directiveLine = lines[index].trimStart();
+    const trimmedLine = directiveLine.trim();
+
+    if (!trimmedLine || trimmedLine.startsWith("#")) {
+      continue;
+    }
+
+    if (trimmedLine === "---") {
+      flushCurrent();
+      continue;
+    }
+
+    if (!current.lineNumber) {
+      current.lineNumber = lineNumber;
+    }
+
+    const trigger = readDirectiveValue(directiveLine, "TRIGGER");
+    if (trigger !== null) {
+      current.trigger = trigger.trim();
+      continue;
+    }
+
+    const type = readDirectiveValue(directiveLine, "TYPE");
+    if (type !== null) {
+      current.type = type.trim();
+      continue;
+    }
+
+    const suggestion = readDirectiveValue(directiveLine, "SUGGESTION");
+    if (suggestion !== null) {
+      current.suggestions.push(suggestion);
+      continue;
+    }
+
+    warnPattern(sourceLabel, lineNumber, `ignoring unrecognized line`);
+  }
+
+  flushCurrent();
+  return patterns;
+}
+
+function loadPatternsFromFile(patternsFilePath) {
+  const text = fs.readFileSync(patternsFilePath, "utf8");
+  return parsePatternsText(text, patternsFilePath);
+}
+
+/**
+ * @returns {Patterns}
+ */
+function createPatterns(patternsFilePath) {
+  const resolvedPatternsFilePath = getPatternsFilePath(patternsFilePath);
+  try {
+    return loadPatternsFromFile(resolvedPatternsFilePath);
+  } catch (error) {
+    console.error(
+      `[FaultyAI] Could not load patterns from ${resolvedPatternsFilePath}:`,
+      error,
+    );
+    return createEmptyPatterns();
+  }
+}
+
+module.exports = {
+  DEFAULT_PATTERNS_FILE,
+  createPatterns,
+  getPatternsFilePath,
+  loadPatternsFromFile,
+  parsePatternsText,
+};
