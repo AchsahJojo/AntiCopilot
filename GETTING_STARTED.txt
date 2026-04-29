@@ -1,0 +1,204 @@
+AntiCopilot Getting Started Guide
+=================================
+
+This guide is for a new engineer setting up AntiCopilot locally on macOS or
+Windows. AntiCopilot is a VS Code extension, so most development happens inside
+VS Code's Extension Development Host.
+
+
+1. Prerequisites
+----------------
+
+Install these first:
+
+- Visual Studio Code 1.100.0 or newer.
+- Git.
+- Node.js and npm.
+- Optional: VS Code Java language support if you want a richer Java editing
+  experience while testing suggestions.
+
+macOS notes:
+
+- Use Terminal, iTerm, or VS Code's integrated terminal.
+- If you use Homebrew, Git and Node can be installed with Homebrew.
+
+Windows notes:
+
+- Use PowerShell, Windows Terminal, or VS Code's integrated terminal.
+- Install Git for Windows so the `git` command is available.
+- During Git installation, allow Git to be used from the command line.
+
+
+2. Clone and open the project
+-----------------------------
+
+Clone this repo https://github.com/AchsahJojo/AntiCopilot.git 
+
+macOS:
+
+  cd ~/Documents
+  git clone <repo-url> AntiCopilot
+  cd AntiCopilot
+  code .
+
+Windows PowerShell:
+
+  cd $HOME\Documents
+  git clone <repo-url> AntiCopilot
+  cd AntiCopilot
+  code .
+
+If `code .` is not recognized, open VS Code manually and use File > Open Folder.
+
+
+3. Install dependencies
+-----------------------
+
+Run this from the repository root:
+
+  npm install
+
+This installs the VS Code extension development dependencies listed in
+package.json.
+
+
+4. Check the project before running it
+-------------------------------------
+
+Run:
+
+  npm run lint
+
+The lint command should pass. It is the quickest check after JavaScript code
+changes.
+
+The test script is currently wired as:
+
+  npm test
+
+That command runs lint first, then calls `vscode-test`. At the moment the repo
+does not include a `.vscode-test` config file, so the VS Code integration test
+step will fail until that config is added.
+
+
+5. Run AntiCopilot in VS Code
+-----------------------------
+
+1. Open the repository in VS Code.
+2. Open the Run and Debug view.
+3. Choose "Run Extension".
+4. Press F5.
+5. VS Code will open a new Extension Development Host window.
+
+The Extension Development Host is where you test AntiCopilot as if it were
+installed as a real extension.
+
+
+6. Try the extension
+--------------------
+
+In the Extension Development Host window:
+
+1. Create or open a Java file.
+2. Type one of the triggers from src/patterns.txt, such as:
+
+     Scanner s
+     while
+     for
+
+3. A gray ghost-text suggestion should appear.
+4. Press Tab while the cursor is on the suggestion line to accept it.
+5. Hover over the suggestion line to see the full pending suggestion.
+
+To confirm the extension is active:
+
+1. Open the Command Palette.
+2. Run "Developer: Show Running Extensions".
+3. Look for the `faultyai` extension.
+
+
+7. Where to make common changes
+-------------------------------
+
+Change suggestion behavior:
+
+  src/SuggestionController.js
+
+This file is grouped by section:
+
+- Controller lifecycle and VS Code command state
+- AntiCopilot suggestion formatting
+- Preview rendering and cleanup
+- Dynamic pattern matching and suggestion generation
+- Suggestion acceptance
+- Deletion and rejection handling
+- Comment-aware code extraction
+- Document change orchestration
+
+Add or edit Java triggers:
+
+  src/patterns.txt
+
+Change pattern parsing rules:
+
+  src/patterns.js
+
+Change VS Code activation, commands, hover behavior, or file watchers:
+
+  extension.js
+
+Change auto-closing bracket behavior:
+
+  src/AutoClosingBracketsManager.js
+
+Change extension metadata, keybindings, settings, or npm scripts:
+
+  package.json
+
+
+8. Add a new pattern
+--------------------
+
+Open src/patterns.txt and add a block like this:
+
+  TRIGGER: \bScanner\s+(\w+)\b
+  TYPE: variableDependent
+  SUGGESTION: {{variableName}} = new Scanner(System.in);
+  ---
+
+Pattern fields:
+
+- TRIGGER is a JavaScript regular expression.
+- TYPE is either `generic` or `variableDependent`.
+- SUGGESTION can appear once for a single-line suggestion or multiple times for
+  a multi-line suggestion.
+- `{{variableName}}` inserts the first captured variable name.
+- `{{1}}`, `{{2}}`, and so on insert regex capture groups.
+
+The extension watches the configured pattern file and reloads it after changes.
+If the Extension Development Host does not pick up a change, reload that window.
+
+
+9. Debugging tips
+-----------------
+
+- Put breakpoints in extension.js or src/SuggestionController.js.
+- Use the Debug Console in the original VS Code window.
+- Reload the Extension Development Host after code changes.
+- If a suggestion appears in comments, inspect the comment-aware extraction
+  section in src/SuggestionController.js.
+- If a multi-line preview leaves blank lines behind, inspect preview rendering
+  and cleanup in src/SuggestionController.js.
+- If a deleted suggestion keeps coming back, inspect deletion and rejection
+  handling in src/SuggestionController.js.
+
+
+10. Before opening a pull request
+---------------------------------
+
+Run:
+
+  npm run lint
+
+Also manually test in the Extension Development Host with a Java file and at
+least one single-line pattern and one multi-line pattern.
